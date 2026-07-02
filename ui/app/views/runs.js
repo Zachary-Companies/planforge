@@ -98,23 +98,7 @@ function renderList(root, ctx) {
       <div id="run-providers" class="dim" style="padding:4px 2px"></div>
       <details>
         <summary>Models &amp; effort — which model each agent uses</summary>
-        <div class="row" style="flex-wrap:wrap">
-          <div class="field"><label for="m-claude">Claude model</label>
-            <input id="m-claude" value="${esc(cfg.models?.claude ?? '')}" placeholder="claude-fable-5"></div>
-          <div class="field"><label for="m-claude-fb">Claude fallback</label>
-            <input id="m-claude-fb" value="${esc(cfg.models?.claudeFallback ?? '')}" placeholder="claude-opus-4-8"></div>
-          <div class="field"><label for="e-claude">Claude effort</label>
-            <input id="e-claude" value="${esc(cfg.models?.claudeEffort ?? '')}" placeholder="high"></div>
-          <div class="field"><label for="m-codex">Codex model</label>
-            <input id="m-codex" value="${esc(cfg.models?.codex ?? '')}" placeholder="gpt-5.5"></div>
-          <div class="field"><label for="e-codex">Codex effort</label>
-            <input id="e-codex" value="${esc(cfg.models?.codexEffort ?? '')}" placeholder="high"></div>
-          <div class="field"><label for="m-glm">GLM model</label>
-            <input id="m-glm" value="${esc(cfg.models?.glm ?? '')}" placeholder="glm-5.2"></div>
-          <div class="field"><label for="e-glm">GLM effort</label>
-            <input id="e-glm" value="${esc(cfg.models?.glmEffort ?? '')}" placeholder="(provider default)"></div>
-          <button class="btn" id="models-save">Save models</button>
-        </div>
+        <div class="row" style="flex-wrap:wrap" id="models-editor"></div>
         <div class="dim" style="padding:2px">Saved to planforge.config.json; applies to the next run and plan wizard. Per-run overrides: <code>planforge run --model claude=… --effort codex=…</code></div>
       </details>
       <details>
@@ -151,15 +135,58 @@ function renderList(root, ctx) {
     } catch { /* provider info is a nicety — the run panel works without it */ }
   })();
 
+  // Models & effort editor — dropdowns of known-good ids so a typo can't send
+  // a run to a nonexistent model. "Custom…" reveals a text input for ids newer
+  // than this catalog; efforts are closed vocabularies.
+  const MODEL_CATALOG = {
+    claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    codex: ['gpt-5.5'],
+    glm: ['glm-5.2'],
+  };
+  const EFFORT_CATALOG = {
+    claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+    codex: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    glm: ['', 'low', 'medium', 'high', 'xhigh', 'max'], // '' = provider default
+  };
+  const MODEL_FIELDS = [
+    { key: 'claude', label: 'Claude model', options: MODEL_CATALOG.claude, custom: true },
+    { key: 'claudeFallback', label: 'Claude fallback', options: MODEL_CATALOG.claude, custom: true },
+    { key: 'claudeEffort', label: 'Claude effort', options: EFFORT_CATALOG.claude },
+    { key: 'codex', label: 'Codex model', options: MODEL_CATALOG.codex, custom: true },
+    { key: 'codexEffort', label: 'Codex effort', options: EFFORT_CATALOG.codex },
+    { key: 'glm', label: 'GLM model', options: MODEL_CATALOG.glm, custom: true },
+    { key: 'glmEffort', label: 'GLM effort', options: EFFORT_CATALOG.glm, emptyLabel: 'Provider default' },
+  ];
+  const editor = $('#models-editor', root);
+  for (const f of MODEL_FIELDS) {
+    const current = (cfg.models?.[f.key] ?? '').trim();
+    // A configured value outside the catalog still renders (selected) — the
+    // dropdown never silently rewrites someone's config.
+    const options = current && !f.options.includes(current) ? [current, ...f.options] : [...f.options];
+    const opts = options.map((o) => {
+      const label = o === '' ? (f.emptyLabel ?? '(empty)') : o;
+      return `<option value="${esc(o)}" ${o === current ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+    const customOpt = f.custom ? '<option value="__custom__">Custom…</option>' : '';
+    const field = h(`<div class="field"><label for="ms-${f.key}">${esc(f.label)}</label>
+      <select id="ms-${f.key}">${opts}${customOpt}</select>
+      ${f.custom ? `<input id="mc-${f.key}" placeholder="model id" style="display:none;margin-top:4px">` : ''}</div>`);
+    editor.appendChild(field);
+    if (f.custom) {
+      field.querySelector('select').addEventListener('change', (e) => {
+        field.querySelector('input').style.display = e.target.value === '__custom__' ? '' : 'none';
+      });
+    }
+  }
+  editor.appendChild(h('<button class="btn" id="models-save">Save models</button>'));
+
   $('#models-save', root).addEventListener('click', async () => {
-    const val = (id) => $(id, root).value.trim();
-    const body = {
-      claude: val('#m-claude'), claudeFallback: val('#m-claude-fb'), claudeEffort: val('#e-claude'),
-      codex: val('#m-codex'), codexEffort: val('#e-codex'),
-      glm: val('#m-glm'), glmEffort: $('#e-glm', root).value.trim(),
-    };
-    for (const [k, v] of Object.entries(body)) {
-      if (!v && k !== 'glmEffort') { toast(`${k} cannot be empty`, 'err'); return; }
+    const body = {};
+    for (const f of MODEL_FIELDS) {
+      const sel = $(`#ms-${f.key}`, root).value;
+      const v = sel === '__custom__' ? $(`#mc-${f.key}`, root).value.trim() : sel;
+      if (!v && f.key !== 'glmEffort') { toast(`${f.label} cannot be empty`, 'err'); return; }
+      body[f.key] = v;
     }
     try {
       await apiPost('/api/config/models', body);
