@@ -45,8 +45,11 @@ const env = {
 };
 
 const MODEL = process.env.GLM_CHAIN_MODEL || 'glm-5.2';
+// Effort is opt-in for GLM: only passed when configured (models.glmEffort),
+// since not every Anthropic-compatible endpoint accepts the knob.
+const effortArgs = process.env.GLM_CHAIN_EFFORT ? ['--effort', process.env.GLM_CHAIN_EFFORT] : [];
 const { cmd, args } = claudeCommand();
-const result = await runStreaming(cmd, [...args, '-p', '--model', MODEL, '--dangerously-skip-permissions'], {
+const result = await runStreaming(cmd, [...args, '-p', '--model', MODEL, ...effortArgs, '--dangerously-skip-permissions'], {
   input: readStdin(),
   env,
 });

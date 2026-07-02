@@ -472,3 +472,29 @@ test('POST /api/runs rejects a malformed builder/reviewer name', async () => {
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /provider name/);
 });
+
+test('POST /api/config/models updates the models block and rejects bad fields', async () => {
+  const res = await fetch(`${base}/api/config/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ claude: 'claude-opus-4-8', codexEffort: 'medium', glmEffort: '' }),
+  });
+  assert.equal(res.status, 200);
+  const { models } = await res.json();
+  assert.equal(models.claude, 'claude-opus-4-8');
+  assert.equal(models.codexEffort, 'medium');
+  const onDisk = JSON.parse(readFileSync(join(ws, 'planforge.config.json'), 'utf8'));
+  assert.equal(onDisk.models.claude, 'claude-opus-4-8');
+  assert.equal(onDisk.models.glmEffort, '');
+  const cfg = await (await fetch(`${base}/api/config`)).json();
+  assert.equal(cfg.models.claude, 'claude-opus-4-8');
+
+  const bad = await fetch(`${base}/api/config/models`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ claude: '' }),
+  });
+  assert.equal(bad.status, 400);
+  const unknown = await fetch(`${base}/api/config/models`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hacker: 'x' }),
+  });
+  assert.equal(unknown.status, 400);
+});

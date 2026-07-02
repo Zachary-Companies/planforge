@@ -47,7 +47,10 @@ A local web UI fronts all three steps and streams live run progress.
     "claude": "claude-fable-5",
     "claudeFallback": "claude-opus-4-8",
     "claudeEffort": "high",
-    "codex": "gpt-5.5"
+    "codex": "gpt-5.5",
+    "codexEffort": "high",
+    "glm": "glm-5.2",
+    "glmEffort": ""
   }
 }
 ```

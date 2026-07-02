@@ -52,9 +52,13 @@ Usage:
 
   planforge run [--seed-slices <file>] [--max-slices <n>] [--workers <n>] [--dry-run]
                 [--fix-workers <n>] [--no-fix] [--builder <name>] [--reviewer <name>]
+                [--model <provider>=<id>] [--effort <provider>=<level>]
                 [--plan-only] [--config <path>]
       Run the continuous multi-agent build pool over the plans (see
-      core/orchestrator.mjs --help for every option).
+      core/orchestrator.mjs --help for every option). --model/--effort are
+      repeatable per-run overrides of config "models", e.g.:
+        --model claude=claude-opus-4-8 --effort codex=medium
+      (providers: claude, claude-fallback (model only), codex, glm)
 
   planforge ui [--port <n>] [--config <path>]
       Start the local web UI (dashboard, plan wizard, preferences form).
@@ -230,6 +234,8 @@ async function cmdPlan(argv) {
   let dirName = null;
   let remoteArg = null;
   let isPublic = false;
+  let planModel = null;
+  let planEffort = null;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--answers') answersPath = resolve(need(argv, ++i, '--answers'));
     else if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
@@ -242,6 +248,8 @@ async function cmdPlan(argv) {
     else if (argv[i] === '--dir') dirName = need(argv, ++i, '--dir');
     else if (argv[i] === '--remote') remoteArg = need(argv, ++i, '--remote');
     else if (argv[i] === '--public') isPublic = true;
+    else if (argv[i] === '--model') planModel = need(argv, ++i, '--model');
+    else if (argv[i] === '--effort') planEffort = need(argv, ++i, '--effort');
     else throw new Error(`Unknown option for plan: ${argv[i]}`);
   }
   const revising = reviseSlug !== null;
@@ -290,9 +298,9 @@ async function cmdPlan(argv) {
   }
   const env = {
     ...process.env,
-    CLAUDE_CHAIN_MODEL: config.models.claude,
+    CLAUDE_CHAIN_MODEL: planModel || config.models.claude,
     CLAUDE_CHAIN_FALLBACK_MODEL: config.models.claudeFallback,
-    CLAUDE_CHAIN_EFFORT: config.models.claudeEffort,
+    CLAUDE_CHAIN_EFFORT: planEffort || config.models.claudeEffort,
   };
   const stage = (name, detail = '') => console.log(`\n@plan-stage ${name}${detail ? ` ${detail}` : ''}`);
 
@@ -306,11 +314,11 @@ async function cmdPlan(argv) {
     if (!existsSync(feedbackPath)) throw new Error(`Feedback file not found: ${feedbackPath}`);
     const currentPlan = readFileSync(revisePath, 'utf8');
     const feedback = readFileSync(feedbackPath, 'utf8');
-    stage('revise', `(model ${config.models.claude})`);
+    stage('revise', `(model ${env.CLAUDE_CHAIN_MODEL})`);
     const output = await runAgent(agentArgv, config.workspace, prompts.buildRevisePrompt({ currentPlan, feedback, preferences }), env);
     doc = extractPlanDoc(output);
   } else {
-    stage('draft', `(model ${config.models.claude})`);
+    stage('draft', `(model ${env.CLAUDE_CHAIN_MODEL})`);
     const output = await runAgent(agentArgv, config.workspace, prompts.buildInterviewPrompt({ answers, preferences }), env);
     doc = extractPlanDoc(output);
   }
@@ -405,6 +413,21 @@ async function cmdPlan(argv) {
 // planforge run
 // ---------------------------------------------------------------------------
 
+// Parse "--model claude=claude-opus-4-8" / "--effort codex=medium" style values
+// into the models-override key the config uses.
+const MODEL_KEYS = { claude: 'claude', 'claude-fallback': 'claudeFallback', codex: 'codex', glm: 'glm' };
+const EFFORT_KEYS = { claude: 'claudeEffort', codex: 'codexEffort', glm: 'glmEffort' };
+function parseProviderValue(value, flag, keys) {
+  const eq = value.indexOf('=');
+  if (eq < 1) throw new Error(`${flag} expects <provider>=<value> (e.g. ${flag} claude=…); got "${value}"`);
+  const provider = value.slice(0, eq).toLowerCase();
+  const key = keys[provider];
+  if (!key) throw new Error(`${flag}: unknown provider "${provider}" (expected ${Object.keys(keys).join('/')})`);
+  const v = value.slice(eq + 1).trim();
+  if (!v && key !== 'glmEffort') throw new Error(`${flag} ${provider}= needs a value`);
+  return [key, v];
+}
+
 async function cmdRun(argv) {
   const overrides = {};
   let configArg = null;
@@ -412,6 +435,13 @@ async function cmdRun(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--config') configArg = resolve(need(argv, ++i, '--config'));
+    else if (arg === '--model') {
+      const [key, v] = parseProviderValue(need(argv, ++i, '--model'), '--model', MODEL_KEYS);
+      overrides.models = { ...overrides.models, [key]: v };
+    } else if (arg === '--effort') {
+      const [key, v] = parseProviderValue(need(argv, ++i, '--effort'), '--effort', EFFORT_KEYS);
+      overrides.models = { ...overrides.models, [key]: v };
+    }
     else if (arg === '--seed-slices') overrides.seedSlices = resolve(need(argv, ++i, '--seed-slices'));
     else if (arg === '--max-slices') overrides.maxSlices = parseIntFlag(need(argv, ++i, '--max-slices'), '--max-slices', { min: 1 });
     else if (arg === '--workers') overrides.workers = parseIntFlag(need(argv, ++i, '--workers'), '--workers', { min: 1 });

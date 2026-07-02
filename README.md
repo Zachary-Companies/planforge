@@ -69,6 +69,13 @@ Three providers work out of the box; set up the ones you have accounts for:
 | **Codex** (OpenAI) | install the Codex app or CLI and sign in |
 | **GLM 5.2** (z.ai) | `export ZAI_API_KEY=...` (or save it once in `~/.config/zai/env`) |
 
+**Picking models and effort:** every provider's model id and reasoning effort
+live in `planforge.config.json` under `models` (Claude also has a fallback
+model for when the primary is gated). Edit them in the UI's run panel under
+"Models & effort", or override per run:
+`planforge run --model claude=claude-opus-4-8 --effort codex=medium`. The plan
+wizard accepts `planforge plan --model <id> --effort <level>` too.
+
 **Picking who writes and who reviews:** by default PlanForge auto-selects from
 what's available (writer prefers Codex → GLM → Claude; reviewer prefers
 Claude → Codex → GLM) and fails over automatically when a provider runs out

@@ -97,6 +97,27 @@ function renderList(root, ctx) {
       </div>
       <div id="run-providers" class="dim" style="padding:4px 2px"></div>
       <details>
+        <summary>Models &amp; effort — which model each agent uses</summary>
+        <div class="row" style="flex-wrap:wrap">
+          <div class="field"><label for="m-claude">Claude model</label>
+            <input id="m-claude" value="${esc(cfg.models?.claude ?? '')}" placeholder="claude-fable-5"></div>
+          <div class="field"><label for="m-claude-fb">Claude fallback</label>
+            <input id="m-claude-fb" value="${esc(cfg.models?.claudeFallback ?? '')}" placeholder="claude-opus-4-8"></div>
+          <div class="field"><label for="e-claude">Claude effort</label>
+            <input id="e-claude" value="${esc(cfg.models?.claudeEffort ?? '')}" placeholder="high"></div>
+          <div class="field"><label for="m-codex">Codex model</label>
+            <input id="m-codex" value="${esc(cfg.models?.codex ?? '')}" placeholder="gpt-5.5"></div>
+          <div class="field"><label for="e-codex">Codex effort</label>
+            <input id="e-codex" value="${esc(cfg.models?.codexEffort ?? '')}" placeholder="high"></div>
+          <div class="field"><label for="m-glm">GLM model</label>
+            <input id="m-glm" value="${esc(cfg.models?.glm ?? '')}" placeholder="glm-5.2"></div>
+          <div class="field"><label for="e-glm">GLM effort</label>
+            <input id="e-glm" value="${esc(cfg.models?.glmEffort ?? '')}" placeholder="(provider default)"></div>
+          <button class="btn" id="models-save">Save models</button>
+        </div>
+        <div class="dim" style="padding:2px">Saved to planforge.config.json; applies to the next run and plan wizard. Per-run overrides: <code>planforge run --model claude=… --effort codex=…</code></div>
+      </details>
+      <details>
         <summary>Seed slices (optional) — hand-authored slices the planner won't surface</summary>
         <textarea id="run-seed" rows="5" placeholder='[
   { "id": "fix-readme-badges", "repo": "owner/repo", "title": "Fix stale README badges", "paths": ["README.md"] }
@@ -129,6 +150,24 @@ function renderList(root, ctx) {
       $('#run-providers', root).innerHTML = `Agents: ${chips}${anyOut ? ' &nbsp;·&nbsp; hover an ✖ for how to set it up, or run <code>planforge doctor</code>' : ''}`;
     } catch { /* provider info is a nicety — the run panel works without it */ }
   })();
+
+  $('#models-save', root).addEventListener('click', async () => {
+    const val = (id) => $(id, root).value.trim();
+    const body = {
+      claude: val('#m-claude'), claudeFallback: val('#m-claude-fb'), claudeEffort: val('#e-claude'),
+      codex: val('#m-codex'), codexEffort: val('#e-codex'),
+      glm: val('#m-glm'), glmEffort: $('#e-glm', root).value.trim(),
+    };
+    for (const [k, v] of Object.entries(body)) {
+      if (!v && k !== 'glmEffort') { toast(`${k} cannot be empty`, 'err'); return; }
+    }
+    try {
+      await apiPost('/api/config/models', body);
+      toast('Models saved — applies to the next run');
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
 
   $('#run-start-btn', root).addEventListener('click', async () => {
     const btn = $('#run-start-btn', root);

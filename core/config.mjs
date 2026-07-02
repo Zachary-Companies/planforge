@@ -27,7 +27,9 @@ export const CONFIG_DEFAULTS = Object.freeze({
     claudeFallback: 'claude-opus-4-8',
     claudeEffort: 'high',
     codex: 'gpt-5.5',
+    codexEffort: 'high',
     glm: 'glm-5.2',
+    glmEffort: '', // empty = let the provider use its own default
   }),
 });
 
@@ -123,6 +125,9 @@ function providersField(configPath, raw) {
   };
 }
 
+// Keys where an empty string is meaningful ("don't pass this knob at all").
+const MODELS_ALLOW_EMPTY = new Set(['glmEffort']);
+
 function modelsField(configPath, raw) {
   const d = CONFIG_DEFAULTS.models;
   if (raw === undefined) return { ...d };
@@ -130,10 +135,10 @@ function modelsField(configPath, raw) {
   const out = { ...d };
   for (const key of Object.keys(d)) {
     if (raw[key] === undefined) continue;
-    if (typeof raw[key] !== 'string' || raw[key].trim() === '') {
+    if (typeof raw[key] !== 'string' || (raw[key].trim() === '' && !MODELS_ALLOW_EMPTY.has(key))) {
       fail(configPath, `"models.${key}" must be a non-empty string (got ${JSON.stringify(raw[key])})`);
     }
-    out[key] = raw[key];
+    out[key] = raw[key].trim();
   }
   return out;
 }

@@ -53,8 +53,16 @@ const CONFIG_DEFAULTS = {
   workers: 3,
   fixWorkers: 1,
   maxSlices: 12,
-  providers: { builderPriority: ['codex', 'claude'], reviewerPriority: ['claude', 'codex'] },
-  models: {},
+  providers: { builderPriority: ['codex', 'glm', 'claude'], reviewerPriority: ['claude', 'codex', 'glm'] },
+  models: {
+    claude: 'claude-fable-5',
+    claudeFallback: 'claude-opus-4-8',
+    claudeEffort: 'high',
+    codex: 'gpt-5.5',
+    codexEffort: 'high',
+    glm: 'glm-5.2',
+    glmEffort: '',
+  },
 };
 
 function discoverConfigPath(startDir) {
@@ -96,7 +104,7 @@ export function loadContext(explicitPath) {
       throw new Error(`${configPath} must contain a JSON object`);
     }
   }
-  const config = { ...CONFIG_DEFAULTS, ...raw };
+  const config = { ...CONFIG_DEFAULTS, ...raw, models: { ...CONFIG_DEFAULTS.models, ...(raw.models || {}) } };
   const configDir = configPath ? dirname(configPath) : process.cwd();
   const workspace = resolve(configDir, config.workspace ?? '.');
   return {
@@ -903,6 +911,35 @@ export function createRequestHandler(ctx, options, sseClients) {
           json(res, 502, { error: `doctor failed: ${err ? err.message : 'unparseable output'}` });
         }
       });
+    }],
+
+    ['POST', /^\/api\/config\/models$/, async (req, res) => {
+      // Update the models block of planforge.config.json (model id + effort
+      // per provider). Only known string fields; glmEffort may be empty
+      // ("use the provider's default").
+      const body = await readJsonBody(req, res);
+      if (body === undefined) return;
+      const KEYS = ['claude', 'claudeFallback', 'claudeEffort', 'codex', 'codexEffort', 'glm', 'glmEffort'];
+      const updates = {};
+      for (const k of KEYS) {
+        if (body[k] === undefined) continue;
+        if (typeof body[k] !== 'string' || (body[k].trim() === '' && k !== 'glmEffort')) {
+          json(res, 400, { error: `models.${k} must be a non-empty string` });
+          return;
+        }
+        updates[k] = body[k].trim();
+      }
+      if (!Object.keys(updates).length) { json(res, 400, { error: 'no model fields to update' }); return; }
+      if (!ctx.configPath || !existsSync(ctx.configPath)) { json(res, 404, { error: 'no planforge.config.json to update' }); return; }
+      try {
+        const raw = JSON.parse(readFileSync(ctx.configPath, 'utf8'));
+        raw.models = { ...(raw.models || {}), ...updates };
+        writeFileSync(ctx.configPath, `${JSON.stringify(raw, null, 2)}\n`);
+        ctx.config.models = { ...(ctx.config.models || {}), ...updates };
+        json(res, 200, { ok: true, models: ctx.config.models });
+      } catch (err) {
+        json(res, 500, { error: `could not update ${ctx.configPath}: ${err.message}` });
+      }
     }],
 
     ['GET', /^\/api\/preferences$/, (req, res) => {

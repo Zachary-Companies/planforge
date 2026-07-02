@@ -35,7 +35,9 @@ test('applies every default to an empty config', (t) => {
     claudeFallback: 'claude-opus-4-8',
     claudeEffort: 'high',
     codex: 'gpt-5.5',
+    codexEffort: 'high',
     glm: 'glm-5.2',
+    glmEffort: '',
   });
 });
 

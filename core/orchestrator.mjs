@@ -122,7 +122,10 @@ function applyModelEnv(models) {
   process.env.CLAUDE_CHAIN_FALLBACK_MODEL = models.claudeFallback;
   process.env.CLAUDE_CHAIN_EFFORT = models.claudeEffort;
   process.env.CODEX_CHAIN_MODEL = models.codex;
+  if (models.codexEffort) process.env.CODEX_CHAIN_EFFORT = models.codexEffort;
   if (models.glm) process.env.GLM_CHAIN_MODEL = models.glm;
+  if (models.glmEffort) process.env.GLM_CHAIN_EFFORT = models.glmEffort;
+  else delete process.env.GLM_CHAIN_EFFORT;
 }
 
 // Dynamic provider selection with reactive failover — the DEFAULT behavior.
@@ -1473,8 +1476,9 @@ export async function runOrchestrator(config, overrides = {}) {
   const sliceBudget = args.maxSlices;
   const runDir = join(args.workspace, '.planforge', 'runs', timestamp());
 
-  // Models: the agent scripts read these env vars; config is the source of truth.
-  applyModelEnv(config.models);
+  // Models: the agent scripts read these env vars; config is the source of
+  // truth, with per-run overrides (--model / --effort) merged on top.
+  applyModelEnv({ ...config.models, ...(overrides.models || {}) });
 
   // Providers. Automatic priority selection with reactive failover is the
   // DEFAULT; --builder/--reviewer pin the pair and disable failover.
