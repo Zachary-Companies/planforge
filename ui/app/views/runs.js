@@ -87,10 +87,15 @@ function renderList(root, ctx) {
           <input id="run-workers" type="number" min="1" max="32" value="${Number(cfg.workers) || 3}"></div>
         <div class="field"><label for="run-max">Max slices</label>
           <input id="run-max" type="number" min="1" max="200" value="${Number(cfg.maxSlices) || 12}"></div>
+        <div class="field"><label for="run-builder">Code writer</label>
+          <select id="run-builder"><option value="">Auto (recommended)</option></select></div>
+        <div class="field"><label for="run-reviewer">Reviewer</label>
+          <select id="run-reviewer"><option value="">Auto (recommended)</option></select></div>
         <div class="field"><label>Repos in scope</label>
           <div class="dim" style="padding:8px 2px">${(cfg.repos ?? []).length ? (cfg.repos ?? []).map((r) => `<code>${esc(r)}</code>`).join(' · ') : '<span class="faint">from planforge.config.json</span>'}</div></div>
         <button class="btn primary" id="run-start-btn" ${cfg.hasCli === false ? 'disabled' : ''}>Start run</button>
       </div>
+      <div id="run-providers" class="dim" style="padding:4px 2px"></div>
       <details>
         <summary>Seed slices (optional) — hand-authored slices the planner won't surface</summary>
         <textarea id="run-seed" rows="5" placeholder='[
@@ -101,6 +106,30 @@ function renderList(root, ctx) {
     <div class="sect-title">Past &amp; live runs</div>
     <div id="run-list" class="loading-row"><span class="spinner"></span>loading runs…</div>`;
 
+  // Agent availability + role pickers: which agent writes the code, which one
+  // reviews. "Auto" keeps the config-priority failover; a pick pins the role.
+  (async () => {
+    try {
+      const { providers, roles } = await apiGet('/api/providers');
+      const label = (name) => (name.length <= 3 ? name.toUpperCase() : name.charAt(0).toUpperCase() + name.slice(1));
+      for (const role of ['builder', 'reviewer']) {
+        const sel = $(`#run-${role}`, root);
+        if (!sel) continue;
+        for (const p of providers) {
+          const opt = document.createElement('option');
+          opt.value = p.name;
+          opt.textContent = p.available ? label(p.name) : `${label(p.name)} — not set up`;
+          opt.disabled = !p.available;
+          sel.appendChild(opt);
+        }
+        if (roles?.[role]) sel.querySelector('option[value=""]').textContent = `Auto (now: ${label(roles[role])})`;
+      }
+      const chips = providers.map((p) => `<span class="${p.available ? '' : 'faint'}" title="${esc(p.detail || '')}">${p.available ? '✔' : '✖'} ${esc(label(p.name))}</span>`).join(' &nbsp; ');
+      const anyOut = providers.some((p) => !p.available);
+      $('#run-providers', root).innerHTML = `Agents: ${chips}${anyOut ? ' &nbsp;·&nbsp; hover an ✖ for how to set it up, or run <code>planforge doctor</code>' : ''}`;
+    } catch { /* provider info is a nicety — the run panel works without it */ }
+  })();
+
   $('#run-start-btn', root).addEventListener('click', async () => {
     const btn = $('#run-start-btn', root);
     const body = {};
@@ -108,6 +137,10 @@ function renderList(root, ctx) {
     const maxSlices = $('#run-max', root).value.trim();
     if (workers) body.workers = Number(workers);
     if (maxSlices) body.maxSlices = Number(maxSlices);
+    const builder = $('#run-builder', root)?.value;
+    const reviewer = $('#run-reviewer', root)?.value;
+    if (builder) body.builder = builder;
+    if (reviewer) body.reviewer = reviewer;
     const seedRaw = $('#run-seed', root).value.trim();
     if (seedRaw) {
       try {

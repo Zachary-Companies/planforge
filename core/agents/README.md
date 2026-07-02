@@ -18,6 +18,13 @@ Every `agent-<name>.sh` in this directory must:
    `core/providers.mjs`), so don't swallow error text.
 4. **Exit 0 on success, non-zero on failure.** The exit code is the only
    success signal the chain trusts.
+5. **Answer `--check` (recommended).** When invoked as `agent-<name>.sh
+   --check`, print ONE line and exit 0 if the provider is ready to use
+   (CLI installed, credentials present), or print a one-line fix hint and
+   exit non-zero. `planforge doctor`, the UI's agent status panel, and the
+   orchestrator's startup health check all use this. Scripts without
+   `--check` still work — the probe times out safely — but users get a
+   worse setup experience.
 
 The agent must be able to *act*, not just answer: it needs read/write access to
 the working tree and permission to run `git`/`gh` (which is why the bundled
@@ -26,14 +33,20 @@ orchestrator already isolates each worker in its own worktree).
 
 ## Bundled providers
 
-| Script | CLI | Model env vars (set by the orchestrator from `planforge.config.json` `models`) |
-|---|---|---|
-| `agent-claude.sh` | `claude` (Claude Code) | `CLAUDE_CHAIN_MODEL`, `CLAUDE_CHAIN_FALLBACK_MODEL`, `CLAUDE_CHAIN_EFFORT` |
-| `agent-codex.sh` | `codex` | `CODEX_CHAIN_MODEL`, `CODEX_CHAIN_EFFORT` |
+| Script | CLI | Setup | Model env vars (set by the orchestrator from `planforge.config.json` `models`) |
+|---|---|---|---|
+| `agent-claude.sh` | `claude` (Claude Code) | `npm i -g @anthropic-ai/claude-code`, then `claude` once to sign in | `CLAUDE_CHAIN_MODEL`, `CLAUDE_CHAIN_FALLBACK_MODEL`, `CLAUDE_CHAIN_EFFORT` |
+| `agent-codex.sh` | `codex` | install the Codex app/CLI, sign in with your OpenAI account | `CODEX_CHAIN_MODEL`, `CODEX_CHAIN_EFFORT` |
+| `agent-glm.sh` | GLM 5.2 via z.ai (driven by Claude Code pointed at z.ai's Anthropic-compatible endpoint) | get a z.ai API key, then `export ZAI_API_KEY=...` or save it in `~/.config/zai/env` | `GLM_CHAIN_MODEL` |
 
 `agent-claude.sh` buffers the stdin prompt so that, when the configured model is
 unavailable at runtime, it can replay the same prompt once against the fallback
-model.
+model. `agent-glm.sh` uses an isolated Claude Code config dir, so your real
+Claude login is untouched — Claude and GLM can fill the two roles side by side.
+
+Run `planforge doctor` any time to see which providers are ready and which
+roles they'd fill; the UI's run panel shows the same and lets you pick the
+code writer and reviewer per run.
 
 ## Adding your own provider
 

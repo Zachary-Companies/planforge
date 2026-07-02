@@ -433,3 +433,42 @@ test('POST /api/runs/:id/stop reports when no live pid is tracked', async () => 
   const unknown = await fetch(`${base}/api/runs/2020-01-01T00-00-00-000Z/stop`, { method: 'POST' });
   assert.equal(unknown.status, 404);
 });
+
+test('GET /api/providers proxies planforge doctor --json via PLANFORGE_DOCTOR_CMD', async () => {
+  const DOCTOR_STUB = `
+const report = {
+  ok: true,
+  providers: [
+    { name: 'codex', available: true, detail: 'codex CLI found', builderRank: 1, reviewerRank: 2 },
+    { name: 'glm', available: false, detail: 'ZAI_API_KEY not set', builderRank: 2, reviewerRank: 3 },
+    { name: 'claude', available: true, detail: 'claude CLI on PATH', builderRank: 3, reviewerRank: 1 },
+  ],
+  roles: { builder: 'codex', reviewer: 'claude' },
+};
+console.log(JSON.stringify(report));
+`;
+  writeFileSync(join(ws, 'stub-doctor-cmd.mjs'), DOCTOR_STUB);
+  process.env.PLANFORGE_DOCTOR_CMD = `"${process.execPath}" "${join(ws, 'stub-doctor-cmd.mjs')}"`;
+  try {
+    const res = await fetch(`${base}/api/providers`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.providers.length, 3);
+    assert.deepEqual(body.roles, { builder: 'codex', reviewer: 'claude' });
+    const glm = body.providers.find((p) => p.name === 'glm');
+    assert.equal(glm.available, false);
+    assert.match(glm.detail, /ZAI_API_KEY/);
+  } finally {
+    delete process.env.PLANFORGE_DOCTOR_CMD;
+  }
+});
+
+test('POST /api/runs rejects a malformed builder/reviewer name', async () => {
+  const res = await fetch(`${base}/api/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ builder: '../evil' }),
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /provider name/);
+});

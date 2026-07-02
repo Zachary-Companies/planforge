@@ -49,9 +49,29 @@ planforge run --max-slices 12           # build everything unblocked, 3 workers
 
 - Node.js ≥ 20. No npm dependencies — the whole tool is standard library.
 - `git` and the GitHub CLI (`gh`), authenticated for your target repos.
-- At least one coding agent CLI on your PATH (Claude Code and/or Codex out of
-  the box; add any stdin-driven agent by dropping a small shell wrapper — see
-  `core/agents/README.md`).
+- At least one coding agent (two is better — one writes, one reviews).
+
+Run `planforge doctor` to check all of it at once — it tells you exactly
+what's missing and how to fix it.
+
+### Bring your own agents
+
+Three providers work out of the box; set up the ones you have accounts for:
+
+| Agent | Setup |
+|---|---|
+| **Claude** (Claude Code) | `npm install -g @anthropic-ai/claude-code`, then run `claude` once to sign in |
+| **Codex** (OpenAI) | install the Codex app or CLI and sign in |
+| **GLM 5.2** (z.ai) | `export ZAI_API_KEY=...` (or save it once in `~/.config/zai/env`) |
+
+**Picking who writes and who reviews:** by default PlanForge auto-selects from
+what's available (writer prefers Codex → GLM → Claude; reviewer prefers
+Claude → Codex → GLM) and fails over automatically when a provider runs out
+of credits mid-run. To choose yourself: use the **Code writer** and
+**Reviewer** dropdowns in the UI's run panel, or
+`planforge run --builder glm --reviewer claude`, or reorder the priority
+lists in `planforge.config.json`. Any other stdin-driven agent CLI can be
+added with a ten-line shell wrapper — see `core/agents/README.md`.
 
 ## How it fits together
 

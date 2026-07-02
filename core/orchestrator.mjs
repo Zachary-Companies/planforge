@@ -57,6 +57,7 @@ import {
   isForcedSameProvider,
   agentScriptFor,
   providerHasAgent,
+  checkProvider,
 } from './providers.mjs';
 
 // Where these scripts live. The per-slice worker engine (the review chain) is
@@ -119,6 +120,7 @@ function applyModelEnv(models) {
   process.env.CLAUDE_CHAIN_FALLBACK_MODEL = models.claudeFallback;
   process.env.CLAUDE_CHAIN_EFFORT = models.claudeEffort;
   process.env.CODEX_CHAIN_MODEL = models.codex;
+  if (models.glm) process.env.GLM_CHAIN_MODEL = models.glm;
 }
 
 // Dynamic provider selection with reactive failover — the DEFAULT behavior.
@@ -126,7 +128,7 @@ function applyModelEnv(models) {
 // any provider name maps to core/agents/agent-<name>.sh. A provider whose agent
 // script is missing is excluded up front; a provider that hits an
 // out-of-credits / rate-limit wall is demoted for a cooldown, then retried.
-export function createAutoProvider({ providers }) {
+export function createAutoProvider({ providers, precheck = null }) {
   const { builderPriority, reviewerPriority, dualRoleAllowed = ['claude'] } = providers;
   const names = [...new Set([...builderPriority, ...reviewerPriority])];
   const hasAgent = new Map(names.map((n) => [n, providerHasAgent(n)]));
@@ -136,6 +138,19 @@ export function createAutoProvider({ providers }) {
     }
   }
   const exhausted = new Map(); // provider -> ms timestamp it may be retried after
+  // Optional startup health check (agent-<name>.sh --check): a provider that
+  // fails it (CLI missing, key not set) sits out the whole run — config
+  // problems don't self-heal mid-run, and the hint tells the user the fix.
+  if (precheck) {
+    for (const n of names) {
+      if (!hasAgent.get(n)) continue;
+      const check = precheck(n);
+      if (!check.available) {
+        exhausted.set(n, Date.now() + 24 * 60 * 60 * 1000);
+        console.warn(`Provider "${n}" failed its health check — excluded: ${check.detail}`);
+      }
+    }
+  }
   // Optional hint: PLANFORGE_PROVIDERS_OUT="codex" (comma list) pre-marks providers
   // as out, so the run starts on the next-best pair instead of discovering it via a
   // failed call. Useful when you already know a provider is dry and don't want to
@@ -1481,7 +1496,7 @@ export async function runOrchestrator(config, overrides = {}) {
     }
     console.log(`Pinned providers (no failover) -> ${roles.builder} build / ${roles.reviewer} review`);
   } else {
-    auto = createAutoProvider({ providers: config.providers });
+    auto = createAutoProvider({ providers: config.providers, precheck: checkProvider });
     const picked = auto.sync();
     if (!picked.builder) {
       throw new Error(

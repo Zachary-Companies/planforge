@@ -18,8 +18,8 @@ export const CONFIG_DEFAULTS = Object.freeze({
   fixWorkers: 1,
   maxSlices: 12,
   providers: Object.freeze({
-    builderPriority: Object.freeze(['codex', 'claude']),
-    reviewerPriority: Object.freeze(['claude', 'codex']),
+    builderPriority: Object.freeze(['codex', 'glm', 'claude']),
+    reviewerPriority: Object.freeze(['claude', 'codex', 'glm']),
     dualRoleAllowed: Object.freeze(['claude']),
   }),
   models: Object.freeze({
@@ -27,6 +27,7 @@ export const CONFIG_DEFAULTS = Object.freeze({
     claudeFallback: 'claude-opus-4-8',
     claudeEffort: 'high',
     codex: 'gpt-5.5',
+    glm: 'glm-5.2',
   }),
 });
 

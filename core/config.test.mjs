@@ -27,14 +27,15 @@ test('applies every default to an empty config', (t) => {
   assert.equal(cfg.workers, 3);
   assert.equal(cfg.fixWorkers, 1);
   assert.equal(cfg.maxSlices, 12);
-  assert.deepEqual(cfg.providers.builderPriority, ['codex', 'claude']);
-  assert.deepEqual(cfg.providers.reviewerPriority, ['claude', 'codex']);
+  assert.deepEqual(cfg.providers.builderPriority, ['codex', 'glm', 'claude']);
+  assert.deepEqual(cfg.providers.reviewerPriority, ['claude', 'codex', 'glm']);
   assert.deepEqual(cfg.providers.dualRoleAllowed, ['claude']);
   assert.deepEqual(cfg.models, {
     claude: 'claude-fable-5',
     claudeFallback: 'claude-opus-4-8',
     claudeEffort: 'high',
     codex: 'gpt-5.5',
+    glm: 'glm-5.2',
   });
 });
 

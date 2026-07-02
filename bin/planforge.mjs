@@ -7,6 +7,7 @@
 //   planforge plan --revise <slug> --feedback <file>   revise a plan in place
 //   planforge run [options]             run the continuous build pool
 //   planforge ui [--port N]             start the local web UI
+//   planforge doctor [--json]           check tools, agents, and config health
 //
 // The CLI is a thin shell: config loading lives in core/config.mjs, the pool in
 // core/orchestrator.mjs, prompts in planning/prompts.mjs, and the web UI in
@@ -445,6 +446,84 @@ async function cmdUi(argv) {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// planforge doctor — is this machine ready to plan and build?
+// ---------------------------------------------------------------------------
+
+async function cmdDoctor(argv) {
+  const asJson = argv.includes('--json');
+  let configArg = null;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
+  }
+  const { checkProvider, selectRoles } = await import('../core/providers.mjs');
+  const { spawnSync } = await import('node:child_process');
+  const probe = (cmd, args) => {
+    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: (r.status ?? -1) === 0, detail: `${r.stdout || ''}\n${r.stderr || ''}`.trim().split('\n')[0] || '' };
+  };
+
+  const report = { ok: true, checks: [], providers: [], roles: { builder: null, reviewer: null } };
+  const add = (name, ok, detail, hint = '') => {
+    report.checks.push({ name, ok, detail, hint });
+    if (!ok) report.ok = false;
+  };
+
+  const nodeMajor = Number(process.versions.node.split('.')[0]);
+  add('node', nodeMajor >= 20, `v${process.versions.node}`, nodeMajor >= 20 ? '' : 'PlanForge needs Node 20 or newer — https://nodejs.org');
+  const git = probe('git', ['--version']);
+  add('git', git.ok, git.detail, git.ok ? '' : 'Install git: https://git-scm.com');
+  const gh = probe('gh', ['auth', 'status']);
+  add('gh', gh.ok, gh.ok ? 'authenticated' : gh.detail, gh.ok ? '' : 'Install the GitHub CLI (https://cli.github.com) and run: gh auth login');
+
+  let config = null;
+  try {
+    config = loadConfig(configArg || process.cwd());
+    add('config', true, config.configPath);
+    add('repos', config.repos.length > 0, `${config.repos.length} repo(s) in scope`, config.repos.length ? '' : 'Add "owner/repo" entries to "repos" — the pool needs a target. (A plan wizard "yes" to the GitHub question does this for you.)');
+    add('plans', existsSync(config.plansPath), config.plansPath, existsSync(config.plansPath) ? '' : 'Run: planforge plan (or the UI wizard) to create your first build plan.');
+    add('preferences', existsSync(config.preferencesPath), config.preferencesPath, existsSync(config.preferencesPath) ? '' : 'Optional but recommended: fill in the Preferences form in the UI.');
+  } catch (e) {
+    add('config', false, e.message, 'Run: planforge init  (in the folder that holds your project checkouts)');
+  }
+
+  const providers = config ? config.providers : CONFIG_DEFAULTS.providers;
+  const names = [...new Set([...providers.builderPriority, ...providers.reviewerPriority])];
+  for (const name of names) {
+    const result = checkProvider(name);
+    report.providers.push({
+      ...result,
+      builderRank: providers.builderPriority.indexOf(name) + 1 || null,
+      reviewerRank: providers.reviewerPriority.indexOf(name) + 1 || null,
+    });
+  }
+  const availableNames = report.providers.filter((p) => p.available).map((p) => p.name);
+  report.roles = selectRoles(availableNames, providers);
+  if (!report.roles.builder) report.ok = false;
+
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  const mark = (ok) => (ok ? '✔' : '✖');
+  console.log('PlanForge doctor\n');
+  for (const c of report.checks) {
+    console.log(`  ${mark(c.ok)} ${c.name.padEnd(12)} ${c.detail}`);
+    if (!c.ok && c.hint) console.log(`      → ${c.hint}`);
+  }
+  console.log('\n  Agents:');
+  for (const p of report.providers) {
+    console.log(`  ${mark(p.available)} ${p.name.padEnd(12)} ${p.detail}`);
+  }
+  if (report.roles.builder) {
+    console.log(`\n  With what's available right now: ${report.roles.builder} writes the code, ${report.roles.reviewer} reviews it.`);
+    console.log('  Pick different roles in the UI run panel, with planforge run --builder/--reviewer, or by reordering providers in planforge.config.json.');
+  } else {
+    console.log('\n  ✖ No usable agent found — set up at least one of the agents above (two is better: one writes, one reviews).');
+  }
+  if (!report.ok) process.exitCode = 1;
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command || command === '--help' || command === '-h' || command === 'help') {
@@ -455,7 +534,8 @@ async function main() {
   if (command === 'plan') return cmdPlan(rest);
   if (command === 'run') return cmdRun(rest);
   if (command === 'ui') return cmdUi(rest);
-  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui)`);
+  if (command === 'doctor') return cmdDoctor(rest);
+  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor)`);
 }
 
 // npm installs the bin as a symlink, so compare the realpath too.

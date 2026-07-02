@@ -28,7 +28,7 @@
 // created) in its environment so events/pids land in a predictable place.
 
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import {
   closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
   readSync, renameSync, rmSync, statSync, watch, writeFileSync,
@@ -632,6 +632,14 @@ async function startRun(res, ctx, body) {
     json(res, err.statusCode, { error: err.message });
     return;
   }
+  const PROVIDER_RE = /^[a-z][a-z0-9_-]*$/i;
+  for (const role of ['builder', 'reviewer']) {
+    const v = body[role];
+    if (v !== undefined && v !== null && v !== '' && (typeof v !== 'string' || !PROVIDER_RE.test(v))) {
+      json(res, 400, { error: `${role} must be a provider name (e.g. "claude", "codex", "glm")` });
+      return;
+    }
+  }
   if (body.seedSlices !== undefined && !Array.isArray(body.seedSlices)) {
     json(res, 400, { error: 'seedSlices must be an array of slice objects' });
     return;
@@ -650,6 +658,8 @@ async function startRun(res, ctx, body) {
   if (ctx.configPath) args.push('--config', ctx.configPath);
   if (workers !== undefined) args.push('--workers', String(workers));
   if (maxSlices !== undefined) args.push('--max-slices', String(maxSlices));
+  if (body.builder) args.push('--builder', body.builder);
+  if (body.reviewer) args.push('--reviewer', body.reviewer);
   mkdirSync(ctx.runsRoot, { recursive: true });
   if (Array.isArray(body.seedSlices) && body.seedSlices.length) {
     mkdirSync(ctx.tmpDir, { recursive: true });
@@ -875,6 +885,24 @@ export function createRequestHandler(ctx, options, sseClients) {
         } catch { /* unparseable — fall through to the built-in set */ }
       }
       json(res, 200, { ...FALLBACK_QUESTIONS, fallback: true });
+    }],
+
+    ['GET', /^\/api\/providers$/, (req, res) => {
+      // Provider availability + the roles they'd fill, via `planforge doctor
+      // --json` (the UI never imports core code). PLANFORGE_DOCTOR_CMD is the
+      // test seam, mirroring PLAN/RUN_CMD.
+      const cmd = resolveCliCommand('PLANFORGE_DOCTOR_CMD');
+      if (!cmd) { json(res, 501, { error: 'planforge CLI not found' }); return; }
+      const args = [...cmd.argv.slice(1), 'doctor', '--json'];
+      if (ctx.configPath) args.push('--config', ctx.configPath);
+      execFile(cmd.argv[0], args, { cwd: ctx.workspace, timeout: 30000 }, (err, stdout) => {
+        try {
+          const report = JSON.parse(stdout);
+          json(res, 200, { providers: report.providers ?? [], roles: report.roles ?? { builder: null, reviewer: null } });
+        } catch {
+          json(res, 502, { error: `doctor failed: ${err ? err.message : 'unparseable output'}` });
+        }
+      });
     }],
 
     ['GET', /^\/api\/preferences$/, (req, res) => {

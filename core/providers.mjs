@@ -18,6 +18,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 export const AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'agents');
 
@@ -39,6 +40,31 @@ export function providerHasAgent(name) {
   } catch {
     return false;
   }
+}
+
+// Health-check a provider by running its agent script with --check (part of the
+// provider contract: print one line and exit 0 when usable, non-0 with a
+// human-readable fix hint otherwise). Scripts that predate --check are guarded
+// by the timeout: stdin is closed, so a script that starts its agent anyway
+// sees EOF and exits quickly. Returns { name, available, detail }.
+export function checkProvider(name, { runScript } = {}) {
+  let script;
+  try {
+    script = agentScriptFor(name);
+  } catch (e) {
+    return { name, available: false, detail: e.message };
+  }
+  if (!existsSync(script)) {
+    return { name, available: false, detail: `agent script missing: ${script}` };
+  }
+  const run = runScript || ((s) =>
+    spawnSync(s, ['--check'], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] }));
+  const r = run(script);
+  const firstLine = `${r.stdout || ''}\n${r.stderr || ''}`.trim().split('\n')[0].trim();
+  if ((r.status ?? -1) === 0) {
+    return { name, available: true, detail: firstLine.replace(/^ok:\s*/i, '') || 'ok' };
+  }
+  return { name, available: false, detail: firstLine || `agent-${name}.sh --check failed` };
 }
 
 // Pick the (builder, reviewer) pair from the set of currently-available

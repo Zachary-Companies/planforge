@@ -9,6 +9,19 @@
 # fallback — the prompt is buffered from stdin so it can be replayed. stderr of
 # the first attempt is deferred until it exits so the retry decision can
 # inspect it.
+if [ "$1" = "--check" ]; then
+  if command -v claude >/dev/null 2>&1; then
+    echo "ok: claude CLI on PATH"
+    exit 0
+  fi
+  if command -v npx >/dev/null 2>&1; then
+    echo "ok: claude via npx fallback (first run is slower)"
+    exit 0
+  fi
+  echo "claude CLI not found — install: npm install -g @anthropic-ai/claude-code, then run: claude  (to sign in)"
+  exit 1
+fi
+
 [ -n "$1" ] && cd "$1" 2>/dev/null || true
 CLAUDE="claude"
 command -v claude >/dev/null 2>&1 || CLAUDE="npx -y @anthropic-ai/claude-code@latest"
