@@ -15,7 +15,14 @@ It has three parts, all driven from a local web UI:
    building, who it's for, and what "done" means — then writes a build plan in
    a strict, agent-friendly format: an overview, the architecture, explicit
    **open decisions** that gate work until you accept them, and phases of
-   small, file-disjoint slices a single worker can finish in one PR.
+   small, file-disjoint slices a single worker can finish in one PR. The plan
+   isn't a one-shot draft: a second pass digs into the details until every
+   slice is implementation-ready, then consistency reviewers go over it a
+   couple of times to find and fix contradictions. When the plan is done,
+   PlanForge sets up the project folder for you — README and .gitignore seeded
+   from the plan, git initialized with a clean first commit, and (if you say
+   yes) a GitHub repository created and registered so the build pool can open
+   pull requests against it.
 3. **Run the pool.** A continuous orchestrator keeps a buffer of unblocked
    slices topped up, K workers build them in parallel git worktrees (one agent
    builds, a second agent reviews), each PR merges in a serial lane the moment

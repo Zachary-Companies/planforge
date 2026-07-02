@@ -390,6 +390,21 @@
       "placeholder": "Two of us check off groceries on the same list from our own phones, and it just works"
     },
     {
+      "id": "project-folder",
+      "label": "What should the project folder be called?",
+      "help": "PlanForge creates this folder next to your other projects and sets up git inside it. Leave blank to name it after the plan.",
+      "type": "text",
+      "placeholder": "my-app"
+    },
+    {
+      "id": "github-repo",
+      "label": "Create a GitHub repository for it?",
+      "help": "The build pool opens and merges pull requests, so it needs a GitHub repo. Private is a safe default; you can skip this and add one later.",
+      "type": "select",
+      "options": ["yes-private", "yes-public", "no"],
+      "placeholder": ""
+    },
+    {
       "id": "anything-else",
       "label": "Anything else the plan should know?",
       "help": "Names you like, look and feel, things you tried before that didn't work, strong opinions — anything at all.",

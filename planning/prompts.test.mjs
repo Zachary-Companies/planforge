@@ -321,3 +321,46 @@ test("questions.json: interview bank is complete and well-formed", () => {
     assert.ok(ids.has(id), `interview bank missing "${id}"`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Deepen + consistency-review prompts
+// ---------------------------------------------------------------------------
+import {
+  buildDeepenPrompt,
+  buildConsistencyReviewPrompt,
+  PLAN_CONSISTENT_MARKER,
+} from "./prompts.mjs";
+
+test("buildDeepenPrompt embeds the plan, the spec, and the depth directives", () => {
+  const prompt = buildDeepenPrompt({
+    currentPlan: "# Garden Log build plan\n<!-- slug: garden-log -->",
+    preferences: { version: 1, general: { languages: ["typescript"] } },
+  });
+  assert.ok(prompt.includes("# Garden Log build plan"));
+  assert.ok(prompt.includes("PlanForge build-plan format"), "spec embedded");
+  assert.ok(/implementation-ready/i.test(prompt));
+  assert.ok(/Do NOT invent requirements/i.test(prompt));
+  assert.ok(/split/i.test(prompt), "asks to split oversized slices");
+  assert.ok(/typescript/i.test(prompt), "preferences summary present");
+  assert.ok(/ledger row/i.test(prompt) || /ledger/i.test(prompt), "history preservation mentioned");
+});
+
+test("buildConsistencyReviewPrompt embeds the checklist and the two-form output rule", () => {
+  const prompt = buildConsistencyReviewPrompt({
+    currentPlan: "# Garden Log build plan",
+    preferences: null,
+    passNumber: 2,
+  });
+  assert.ok(prompt.includes("consistency pass 2"));
+  assert.ok(prompt.includes(PLAN_CONSISTENT_MARKER));
+  assert.ok(/blocked-on-Dx/.test(prompt), "decision-gate check present");
+  assert.ok(/append-only/i.test(prompt), "ledger check present");
+  assert.ok(/no stack preferences were set/i.test(prompt), "null prefs summary rendered");
+  // Both output forms are described.
+  assert.ok(/exactly one of two forms/i.test(prompt));
+});
+
+test("buildConsistencyReviewPrompt defaults a bad passNumber to 1", () => {
+  const prompt = buildConsistencyReviewPrompt({ currentPlan: "x", passNumber: -3 });
+  assert.ok(prompt.includes("consistency pass 1"));
+});

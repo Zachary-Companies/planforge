@@ -106,6 +106,23 @@ Authoritative spec in `planning/plan-format.md`. Non-negotiables:
 The planner agent reads every plan in `plansDir` + `stack-preferences.json`
 and returns the next K unblocked, mutually file-disjoint slices as JSON.
 
+**Plan pipeline** (`planforge plan`): a plan is not one agent call — it is
+draft → **deepen** (expand architecture and every slice until it is
+implementation-ready; unknowns become decisions, never fiction) → **N
+consistency-review passes** (default 2; a checklist-driven reviewer either
+replies `PLAN-CONSISTENT` or returns the corrected doc — the loop stops early
+on the marker) → **write + git** (the plan file is committed when `plansDir`
+is a git repo) → **scaffold** (create the project folder named by the wizard's
+`project-folder` answer or `--dir`, seed README/.gitignore from the plan,
+`git init -b main` + initial commit, and optionally `gh repo create … --push`
+per the `github-repo` answer or `--remote`, registering the new repo in
+`planforge.config.json`). Scaffolding is never destructive: an existing
+non-empty directory is left untouched. Stage transitions are announced on
+stdout as `@plan-stage <name>` lines; the final `@plan-slug <slug>` marker
+names the written plan. Prompt builders live in `planning/prompts.mjs`
+(`buildInterviewPrompt`, `buildDeepenPrompt`, `buildConsistencyReviewPrompt`,
+`buildRevisePrompt`); folder/git mechanics in `core/scaffold.mjs`.
+
 ### 4. Preferences — `stack-preferences.json`
 
 Schema in `planning/preferences-schema.json`. Shape:

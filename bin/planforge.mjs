@@ -30,9 +30,19 @@ Usage:
       creates the plans/ directory, and writes an empty stack-preferences.json.
       Existing files are left untouched.
 
-  planforge plan --answers <file.json> [--config <path>]
-      Turn a JSON file of interview answers into a build plan document written
-      into the workspace's plans directory (plans/<slug>-build-plan.md).
+  planforge plan --answers <file.json> [--config <path>] [options]
+      Turn a JSON file of interview answers into an implementation-ready build
+      plan: draft -> deepen (dig into details) -> consistency review passes
+      that find and fix contradictions -> scaffold the project folder with a
+      clean git history. Options:
+        --passes <n>      consistency review passes (default 2)
+        --no-deepen       skip the detail pass
+        --quick           one-shot draft only (no deepen, no reviews)
+        --no-scaffold     don't create the project folder / git repo
+        --dir <name>      project folder name (default: the plan slug)
+        --remote <o/name> create a GitHub repo and push (also set by the
+                          wizard's GitHub question); --public for public
+      The plan file is committed into the plans repo when it is one.
 
   planforge plan --revise <slug> --feedback <file> [--config <path>]
       Revise an existing plan in place per the feedback text. The revision
@@ -181,16 +191,42 @@ function runAgent(script, workdir, prompt, env) {
   });
 }
 
+// Look up an interview answer by question id — answers may be a flat record
+// ({ id: value }) or an array of { id, label, response|answer|value } objects.
+function answerValue(answers, id) {
+  if (!answers) return null;
+  if (Array.isArray(answers)) {
+    const hit = answers.find((a) => a && a.id === id);
+    if (!hit) return null;
+    return hit.response ?? hit.answer ?? hit.value ?? null;
+  }
+  if (typeof answers === 'object') return answers[id] ?? null;
+  return null;
+}
+
 async function cmdPlan(argv) {
   let answersPath = null;
   let configArg = null;
   let reviseSlug = null;
   let feedbackPath = null;
+  let passes = 2;
+  let deepen = true;
+  let scaffold = true;
+  let dirName = null;
+  let remoteArg = null;
+  let isPublic = false;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--answers') answersPath = resolve(need(argv, ++i, '--answers'));
     else if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
     else if (argv[i] === '--revise') reviseSlug = need(argv, ++i, '--revise');
     else if (argv[i] === '--feedback') feedbackPath = resolve(need(argv, ++i, '--feedback'));
+    else if (argv[i] === '--passes') passes = parseIntFlag(need(argv, ++i, '--passes'), '--passes', { min: 0 });
+    else if (argv[i] === '--no-deepen') deepen = false;
+    else if (argv[i] === '--quick') { deepen = false; passes = 0; }
+    else if (argv[i] === '--no-scaffold') scaffold = false;
+    else if (argv[i] === '--dir') dirName = need(argv, ++i, '--dir');
+    else if (argv[i] === '--remote') remoteArg = need(argv, ++i, '--remote');
+    else if (argv[i] === '--public') isPublic = true;
     else throw new Error(`Unknown option for plan: ${argv[i]}`);
   }
   const revising = reviseSlug !== null;
@@ -226,7 +262,20 @@ async function cmdPlan(argv) {
     throw new Error(`planning/prompts.mjs is required for "planforge plan" (${e.message}).`);
   }
 
-  let prompt;
+  // The plan is authored by the claude provider (stdin prompt, $1 = workdir).
+  // PLANFORGE_PLAN_AGENT overrides the script — a test/UI seam.
+  const script = process.env.PLANFORGE_PLAN_AGENT || agentScriptFor('claude');
+  if (!existsSync(script)) throw new Error(`Agent script missing: ${script}`);
+  const env = {
+    ...process.env,
+    CLAUDE_CHAIN_MODEL: config.models.claude,
+    CLAUDE_CHAIN_FALLBACK_MODEL: config.models.claudeFallback,
+    CLAUDE_CHAIN_EFFORT: config.models.claudeEffort,
+  };
+  const stage = (name, detail = '') => console.log(`\n@plan-stage ${name}${detail ? ` ${detail}` : ''}`);
+
+  // Stage 1 — draft (or revise-in-place).
+  let doc;
   let revisePath = null;
   if (revising) {
     const slug = reviseSlug.replace(/-build-plan(\.md)?$/, '');
@@ -235,25 +284,48 @@ async function cmdPlan(argv) {
     if (!existsSync(feedbackPath)) throw new Error(`Feedback file not found: ${feedbackPath}`);
     const currentPlan = readFileSync(revisePath, 'utf8');
     const feedback = readFileSync(feedbackPath, 'utf8');
-    prompt = prompts.buildRevisePrompt({ currentPlan, feedback, preferences });
+    stage('revise', `(model ${config.models.claude})`);
+    const output = await runAgent(script, config.workspace, prompts.buildRevisePrompt({ currentPlan, feedback, preferences }), env);
+    doc = extractPlanDoc(output);
   } else {
-    prompt = prompts.buildInterviewPrompt({ answers, preferences });
+    stage('draft', `(model ${config.models.claude})`);
+    const output = await runAgent(script, config.workspace, prompts.buildInterviewPrompt({ answers, preferences }), env);
+    doc = extractPlanDoc(output);
+  }
+  if (!doc) throw new Error('The agent returned no plan content.');
+
+  // Stage 2 — deepen: dig into the details until every slice is
+  // implementation-ready. (New plans only; revisions keep their depth.)
+  if (!revising && deepen) {
+    stage('deepen');
+    const output = await runAgent(script, config.workspace, prompts.buildDeepenPrompt({ currentPlan: doc, preferences }), env);
+    const deepened = extractPlanDoc(output);
+    if (deepened) doc = deepened;
+    else console.warn('Deepen pass returned no document — keeping the draft.');
   }
 
-  // The plan is authored by the claude provider (stdin prompt, $1 = workdir).
-  const script = agentScriptFor('claude');
-  if (!existsSync(script)) throw new Error(`Agent script missing: ${script}`);
-  const env = {
-    ...process.env,
-    CLAUDE_CHAIN_MODEL: config.models.claude,
-    CLAUDE_CHAIN_FALLBACK_MODEL: config.models.claudeFallback,
-    CLAUDE_CHAIN_EFFORT: config.models.claudeEffort,
-  };
-  console.log(`${revising ? 'Revising' : 'Generating'} build plan (model ${config.models.claude})...\n`);
-  const output = await runAgent(script, config.workspace, prompt, env);
+  // Stage 3 — consistency review passes: find inconsistencies and fix them,
+  // stopping early once a pass comes back clean.
+  for (let pass = 1; pass <= passes; pass += 1) {
+    stage(`review-${pass}`, `of ${passes}`);
+    const output = await runAgent(script, config.workspace,
+      prompts.buildConsistencyReviewPrompt({ currentPlan: doc, preferences, passNumber: pass }), env);
+    if (output.trim().split('\n').pop().trim() === prompts.PLAN_CONSISTENT_MARKER || output.trim() === prompts.PLAN_CONSISTENT_MARKER) {
+      console.log(`Review pass ${pass}: consistent — done reviewing.`);
+      break;
+    }
+    const fixed = extractPlanDoc(output);
+    if (fixed) {
+      doc = fixed;
+      console.log(`Review pass ${pass}: inconsistencies fixed.`);
+    } else {
+      console.warn(`Review pass ${pass}: unparseable reply — keeping the previous version.`);
+      break;
+    }
+  }
 
-  const doc = extractPlanDoc(output);
-  if (!doc) throw new Error('The agent returned no plan content.');
+  // Stage 4 — write the plan and keep the plans repo clean.
+  stage('write');
   let outPath;
   if (revising) {
     outPath = revisePath; // revision updates the plan in place; the prompt preserves the ledger
@@ -269,7 +341,42 @@ async function cmdPlan(argv) {
   const finalSlug = basename(outPath, '.md').replace(/-build-plan$/, '');
   console.log(`\nPlan written: ${outPath}`);
   console.log(`@plan-slug ${finalSlug}`);
-  console.log('Review its "## 3. Open decisions" — slices gated on a non-Accepted decision will not be built.');
+
+  const { commitPlanFile, scaffoldProject } = await import('../core/scaffold.mjs');
+  const planCommit = commitPlanFile({
+    plansPath: config.plansPath,
+    filePath: outPath,
+    message: revising
+      ? `plan: revise ${finalSlug}`
+      : `plan: add ${finalSlug} (draft${deepen ? ' + deepen' : ''}${passes > 0 ? ` + ${passes} review pass(es)` : ''})`,
+  });
+  if (planCommit.committed) console.log('Plan committed to the plans repository.');
+
+  // Stage 5 — scaffold the project folder + git (new plans only).
+  if (!revising && scaffold) {
+    stage('scaffold');
+    const wantsRepo = String(answerValue(answers, 'github-repo') || '').toLowerCase();
+    const remote = remoteArg || (wantsRepo.startsWith('yes') ? true : null);
+    const visibility = isPublic || wantsRepo === 'yes-public';
+    const result = scaffoldProject({
+      workspace: config.workspace,
+      slug: finalSlug,
+      planDoc: doc,
+      planPath: outPath,
+      dir: dirName || answerValue(answers, 'project-folder') || null,
+      remote,
+      isPublic: visibility,
+      configPath: config.configPath,
+    });
+    if (result.created) console.log(`Project folder: ${result.dir}`);
+    if (result.committed) console.log('Initialized git and made the first commit.');
+    for (const note of result.notes) console.log(`  - ${note}`);
+    if (!result.remote && remote === null) {
+      console.log('No GitHub repo created (pass --remote <owner/name>, or answer "yes" to the GitHub question in the wizard). The build pool needs one to open PRs.');
+    }
+  }
+
+  console.log('Review the plan\'s "## 3. Open decisions" — slices gated on a non-Accepted decision will not be built.');
 }
 
 // ---------------------------------------------------------------------------

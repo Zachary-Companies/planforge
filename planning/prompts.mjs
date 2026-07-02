@@ -401,6 +401,115 @@ export function buildRevisePrompt({ currentPlan, feedback, preferences } = {}) {
  * @param {string} markdown
  * @returns {{ title: string|null, slug: string|null, phases: number, openDecisions: number, slices: number, accepted: number }}
  */
+// The exact reply a consistency-review agent gives when it finds nothing to fix.
+// Callers compare the agent's trimmed output against this to end the review loop.
+export const PLAN_CONSISTENT_MARKER = "PLAN-CONSISTENT";
+
+export function buildDeepenPrompt({ currentPlan, preferences } = {}) {
+  return [
+    "You are a senior software planner doing the DETAIL pass on a draft " +
+      "build plan. The plan will be executed by autonomous build agents that " +
+      "each pick up ONE slice with no other context, so every slice must be " +
+      "implementation-ready on its own.",
+    "",
+    "## Current plan (draft)",
+    "",
+    String(currentPlan ?? "").trim() || "(no plan was provided)",
+    "",
+    "## Stack preferences",
+    "",
+    renderPreferencesSummary(preferences),
+    "",
+    "## Plan format (binding specification)",
+    "",
+    PLAN_FORMAT_SPEC.trim(),
+    "",
+    "## Deepening rules",
+    "",
+    "1. Architecture first: expand `## 2. Architecture` until an agent could " +
+      "start coding from it — the repo layout as a real directory tree, the " +
+      "data model (entities, fields, relations), API routes or module " +
+      "interfaces with method signatures, and how the pieces talk to each " +
+      "other. Name real files.",
+    "2. Every slice becomes buildable in one PR: concrete repo-relative " +
+      "`paths` (source AND test files), acceptance criteria an agent can " +
+      "verify mechanically (a command to run, a behavior to demonstrate — " +
+      "not \"works well\"), and any contracts the slice must honor (types, " +
+      "routes, schemas named in §2).",
+    "3. Split anything too big. A slice an agent cannot finish in one PR " +
+      "gets split into smaller slices in the same phase (new ids at the " +
+      "end; never reuse ids). Phase order must still leave something " +
+      "runnable after every phase.",
+    "4. Do NOT invent requirements. Where detail requires a choice the user " +
+      "never made, add an open decision (D-item) with options and a " +
+      "recommendation, and gate the affected slices with `blocked-on-Dx`. " +
+      "Depth means precision about the KNOWN, not fiction about the unknown.",
+    "5. Preserve history: the title, slug, decision ids, existing slice ids, " +
+      "shipped statuses, and every ledger row stay intact.",
+    "",
+    "## Output",
+    "",
+    "Output ONLY the full deepened plan document as raw markdown — no " +
+      "preamble, no commentary, no surrounding code fence.",
+  ].join("\n");
+}
+
+export function buildConsistencyReviewPrompt({ currentPlan, preferences, passNumber } = {}) {
+  const pass = Number.isInteger(passNumber) && passNumber > 0 ? passNumber : 1;
+  return [
+    "You are a meticulous plan reviewer doing consistency pass " +
+      `${pass} on a build plan. Your ONLY job is to find and fix ` +
+      "inconsistencies — you do not add scope, restyle prose, or second-" +
+      "guess decisions the user accepted.",
+    "",
+    "## Plan under review",
+    "",
+    String(currentPlan ?? "").trim() || "(no plan was provided)",
+    "",
+    "## Stack preferences",
+    "",
+    renderPreferencesSummary(preferences),
+    "",
+    "## Plan format (binding specification)",
+    "",
+    PLAN_FORMAT_SPEC.trim(),
+    "",
+    "## Consistency checklist (check every item)",
+    "",
+    "1. Decision gates: every `blocked-on-Dx` references a D-item that " +
+      "exists and is NOT Accepted; conversely, any slice that depends on a " +
+      "non-Accepted decision is actually gated. An Accepted decision leaves " +
+      "no slice still blocked on it.",
+    "2. Ids: slice ids and decision ids are unique; kebab-case slice ids; " +
+      "no gaps in D-numbering; nothing references an id that does not exist.",
+    "3. Paths: repo-relative, consistent with the directory tree in §2 " +
+      "(no path under a directory §2 does not define), test files included " +
+      "where acceptance criteria imply tests.",
+    "4. Statuses: only the format's vocabulary; a draft plan ships nothing, " +
+      "so `shipped` may only appear if the ledger has a row justifying it.",
+    "5. Phases: numbered contiguously; each phase's outcome line says what " +
+      "is runnable when it completes; no slice depends on work scheduled in " +
+      "a LATER phase.",
+    "6. Cross-section agreement: the stack named in §1/§2 matches what the " +
+      "slices actually build; features promised in §1 map to at least one " +
+      "slice; every §3 recommendation is consistent with §2's architecture; " +
+      "nothing in the plan contradicts the stack preferences without a " +
+      "decision recording the deviation.",
+    "7. Acceptance criteria: present on every slice, mechanically checkable, " +
+      "and consistent with the slice's paths.",
+    "8. Ledger: well-formed rows, chronological, append-only shape.",
+    "",
+    "## Output — exactly one of two forms",
+    "",
+    `1. If EVERY checklist item passes, reply with exactly \`${PLAN_CONSISTENT_MARKER}\` ` +
+      "and nothing else.",
+    "2. Otherwise output ONLY the full corrected plan document as raw " +
+      "markdown (no preamble, no list of findings, no code fence), with " +
+      "every inconsistency fixed and history preserved (title, slug, ids, " +
+      "shipped statuses, ledger rows).",
+  ].join("\n");
+}
+
 export function parsePlanSummary(markdown) {
   const text = typeof markdown === "string" ? markdown : "";
   const count = (re) => (text.match(re) ?? []).length;
