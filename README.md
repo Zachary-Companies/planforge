@@ -47,8 +47,13 @@ planforge run --max-slices 12           # build everything unblocked, 3 workers
 
 ### Requirements
 
+Works on **macOS, Linux, and Windows**.
+
 - Node.js ≥ 20. No npm dependencies — the whole tool is standard library.
 - `git` and the GitHub CLI (`gh`), authenticated for your target repos.
+  On Windows, install [Git for Windows](https://git-scm.com/download/win) —
+  PlanForge uses its bundled bash for composed commands (the agents themselves
+  are Node scripts and need no shell).
 - At least one coding agent (two is better — one writes, one reviews).
 
 Run `planforge doctor` to check all of it at once — it tells you exactly

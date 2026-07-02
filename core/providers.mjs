@@ -19,27 +19,76 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { IS_WINDOWS, findPosixShell } from './platform.mjs';
 
 export const AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'agents');
 
 const PROVIDER_NAME_RE = /^[a-z][a-z0-9_-]*$/i;
 
-// Map a provider name from config to its agent wrapper script. Any name is
-// allowed as long as it is a sane script-name fragment; whether the script
-// actually exists is the caller's availability concern (see providerHasAgent).
-export function agentScriptFor(name) {
+// Agent wrapper lookup order. The bundled wrappers are Node scripts (.mjs) so
+// they run on every platform; custom providers may be .sh (run through the
+// POSIX shell — Git Bash on Windows) or native .cmd/.bat/.exe on Windows.
+const AGENT_EXTENSIONS = IS_WINDOWS
+  ? ['.mjs', '.cmd', '.bat', '.exe', '.sh']
+  : ['.mjs', '.sh'];
+
+function assertProviderName(name) {
   if (typeof name !== 'string' || !PROVIDER_NAME_RE.test(name)) {
     throw new Error(`Invalid provider name: ${JSON.stringify(name)} (expected e.g. "codex" or "claude")`);
   }
-  return join(AGENTS_DIR, `agent-${name}.sh`);
+}
+
+// Resolve a provider name to its agent wrapper file, or null when none exists.
+// `dir` is overridable for tests.
+export function resolveAgent(name, dir = AGENTS_DIR) {
+  assertProviderName(name);
+  for (const ext of AGENT_EXTENSIONS) {
+    const path = join(dir, `agent-${name}${ext}`);
+    if (existsSync(path)) return { path, ext };
+  }
+  return null;
+}
+
+// The argv to execute an agent wrapper cross-platform: Node scripts through
+// this Node, .sh through the POSIX shell, native executables directly.
+export function agentInvocation(name, dir = AGENTS_DIR) {
+  const agent = resolveAgent(name, dir);
+  if (!agent) return null;
+  if (agent.ext === '.mjs') return [process.execPath, agent.path];
+  if (agent.ext === '.sh') {
+    const shell = findPosixShell();
+    return shell ? [shell, agent.path] : null;
+  }
+  return [agent.path];
+}
+
+// The agent wrapper's path (first match), or the .mjs path it WOULD have —
+// kept for callers that only display/derive names from it.
+export function agentScriptFor(name) {
+  assertProviderName(name);
+  const agent = resolveAgent(name);
+  return agent ? agent.path : join(AGENTS_DIR, `agent-${name}.mjs`);
 }
 
 export function providerHasAgent(name) {
   try {
-    return existsSync(agentScriptFor(name));
+    return agentInvocation(name) !== null;
   } catch {
     return false;
   }
+}
+
+// POSIX-shell single-quoting (the composed command always runs through the
+// POSIX shell — /bin/sh, or Git Bash on Windows — never cmd.exe).
+function q(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+// The agent invocation as a shell-command prefix for the chain's role slots,
+// e.g. "'/usr/bin/node' '/…/agent-claude.mjs'". Append args like '{workspace}'.
+export function agentCommandString(name) {
+  const argv = agentInvocation(name);
+  return argv ? argv.map(q).join(' ') : null;
 }
 
 // Health-check a provider by running its agent script with --check (part of the
@@ -48,18 +97,25 @@ export function providerHasAgent(name) {
 // by the timeout: stdin is closed, so a script that starts its agent anyway
 // sees EOF and exits quickly. Returns { name, available, detail }.
 export function checkProvider(name, { runScript } = {}) {
-  let script;
+  let argv;
   try {
-    script = agentScriptFor(name);
+    argv = agentInvocation(name);
   } catch (e) {
     return { name, available: false, detail: e.message };
   }
-  if (!existsSync(script)) {
-    return { name, available: false, detail: `agent script missing: ${script}` };
+  if (!argv) {
+    const missing = resolveAgent(name) === null;
+    return {
+      name,
+      available: false,
+      detail: missing
+        ? `agent wrapper missing: ${join(AGENTS_DIR, `agent-${name}.*`)}`
+        : `agent-${name}.sh needs a POSIX shell — on Windows install Git for Windows (bundled bash), or set PLANFORGE_SHELL`,
+    };
   }
-  const run = runScript || ((s) =>
-    spawnSync(s, ['--check'], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] }));
-  const r = run(script);
+  const run = runScript || ((cmdArgv) =>
+    spawnSync(cmdArgv[0], [...cmdArgv.slice(1), '--check'], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] }));
+  const r = run(argv);
   const firstLine = `${r.stdout || ''}\n${r.stderr || ''}`.trim().split('\n')[0].trim();
   if ((r.status ?? -1) === 0) {
     return { name, available: true, detail: firstLine.replace(/^ok:\s*/i, '') || 'ok' };

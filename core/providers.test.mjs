@@ -88,10 +88,10 @@ test('detectExhaustedProviders — attributes errors to the right provider, scop
   assert.deepEqual(detectExhaustedProviders('', ['claude']), []);
 });
 
-test('agentScriptFor maps any provider name to core/agents/agent-<name>.sh', () => {
-  assert.equal(agentScriptFor('claude'), join(AGENTS_DIR, 'agent-claude.sh'));
-  assert.equal(agentScriptFor('codex'), join(AGENTS_DIR, 'agent-codex.sh'));
-  assert.equal(agentScriptFor('my-local-llm'), join(AGENTS_DIR, 'agent-my-local-llm.sh'));
+test('agentScriptFor resolves bundled agents (.mjs) and defaults new names to .mjs', () => {
+  assert.equal(agentScriptFor('claude'), join(AGENTS_DIR, 'agent-claude.mjs'));
+  assert.equal(agentScriptFor('codex'), join(AGENTS_DIR, 'agent-codex.mjs'));
+  assert.equal(agentScriptFor('my-local-llm'), join(AGENTS_DIR, 'agent-my-local-llm.mjs'));
   assert.throws(() => agentScriptFor(''), /Invalid provider name/);
   assert.throws(() => agentScriptFor('../evil'), /Invalid provider name/);
   assert.throws(() => agentScriptFor(null), /Invalid provider name/);
@@ -101,4 +101,48 @@ test('providerHasAgent reflects the bundled scripts', () => {
   assert.equal(providerHasAgent('claude'), true);
   assert.equal(providerHasAgent('codex'), true);
   assert.equal(providerHasAgent('definitely-not-a-provider'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Cross-platform agent resolution
+// ---------------------------------------------------------------------------
+import { mkdtempSync, writeFileSync as wf } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolveAgent, agentInvocation, agentCommandString } from './providers.mjs';
+import { isTempPath, pathContains } from './platform.mjs';
+
+test('resolveAgent prefers .mjs and falls back per platform', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-agents-'));
+  wf(join(dir, 'agent-both.mjs'), '// node');
+  wf(join(dir, 'agent-both.sh'), '#!/bin/sh');
+  wf(join(dir, 'agent-shonly.sh'), '#!/bin/sh');
+  assert.equal(resolveAgent('both', dir).ext, '.mjs');
+  assert.equal(resolveAgent('shonly', dir).ext, '.sh');
+  assert.equal(resolveAgent('missing', dir), null);
+});
+
+test('agentInvocation runs .mjs through node and .sh through the POSIX shell', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-agents-'));
+  wf(join(dir, 'agent-node.mjs'), '// node');
+  wf(join(dir, 'agent-posix.sh'), '#!/bin/sh');
+  assert.deepEqual(agentInvocation('node', dir), [process.execPath, join(dir, 'agent-node.mjs')]);
+  const shInv = agentInvocation('posix', dir);
+  assert.equal(shInv.length, 2);
+  assert.equal(shInv[1], join(dir, 'agent-posix.sh'));
+  assert.equal(agentInvocation('nope', dir), null);
+});
+
+test('agentCommandString shell-quotes the bundled invocation', () => {
+  const cmd = agentCommandString('claude');
+  assert.ok(cmd.includes('agent-claude.mjs'));
+  assert.ok(cmd.startsWith("'"), 'single-quoted for the POSIX shell');
+});
+
+test('platform path helpers are separator-insensitive', () => {
+  assert.ok(pathContains('C:\\ws\\.planforge\\worktrees\\w1', '/.planforge/worktrees/'));
+  assert.ok(pathContains('/ws/.planforge/worktrees/w1', '/.planforge/worktrees/'));
+  assert.ok(!pathContains('/ws/src/app', '/.planforge/worktrees/'));
+  assert.ok(isTempPath('/tmp/x'));
+  assert.ok(isTempPath(join(tmpdir(), 'anything')));
+  assert.ok(!isTempPath('/home/user/project'));
 });

@@ -605,9 +605,9 @@ test('auto provider: selection, reactive demotion, dual-role fallback', (t) => {
   const r0 = auto.sync();
   assert.equal(r0.builder, 'codex');
   assert.equal(r0.reviewer, 'claude');
-  assert.ok(process.env.CODEX_CHAIN_CMD.includes('agent-codex.sh'), 'builder slot -> agent-codex.sh');
+  assert.ok(process.env.CODEX_CHAIN_CMD.includes('agent-codex.mjs'), 'builder slot -> agent-codex.mjs');
   assert.ok(process.env.CODEX_CHAIN_CMD.includes('{workspace}'), 'builder slot keeps the {workspace} template');
-  assert.ok(process.env.CLAUDE_CHAIN_CMD.includes('agent-claude.sh'), 'reviewer slot -> agent-claude.sh');
+  assert.ok(process.env.CLAUDE_CHAIN_CMD.includes('agent-claude.mjs'), 'reviewer slot -> agent-claude.mjs');
   assert.equal(process.env.CLAUDE_CHAIN_STDIN, '1', 'reviewer slot reads stdin');
   assert.equal(process.env.CHAIN_BUILDER_LABEL, 'Codex');
   assert.equal(process.env.CHAIN_REVIEWER_LABEL, 'Claude');
@@ -617,7 +617,7 @@ test('auto provider: selection, reactive demotion, dual-role fallback', (t) => {
   assert.ok(s1 && s1.demoted.includes('codex'), 'reported demoting codex');
   assert.equal(s1.roles.builder, 'claude');
   assert.equal(s1.roles.reviewer, 'claude');
-  assert.ok(process.env.CODEX_CHAIN_CMD.includes('agent-claude.sh'), 'builder slot re-pointed at agent-claude.sh');
+  assert.ok(process.env.CODEX_CHAIN_CMD.includes('agent-claude.mjs'), 'builder slot re-pointed at agent-claude.mjs');
 
   // A clean worker log triggers no switch.
   assert.equal(auto.noteWorkerLog('Done. PR ready, checks green.'), null);
@@ -674,7 +674,7 @@ test('runOrchestrator --dry-run: config-driven, no writes, model env applied', P
   assert.equal(process.env.CLAUDE_CHAIN_FALLBACK_MODEL, 'claude-test-fallback');
   assert.equal(process.env.CLAUDE_CHAIN_EFFORT, 'medium');
   assert.equal(process.env.CODEX_CHAIN_MODEL, 'gpt-test');
-  assert.ok(process.env.CODEX_CHAIN_CMD.includes('agent-codex.sh'), 'auto selection ran by default');
+  assert.ok(process.env.CODEX_CHAIN_CMD.includes('agent-codex.mjs'), 'auto selection ran by default');
   assert.ok(!existsSync(join(ws, '.planforge')), 'dry run creates no scratch dirs');
 });
 

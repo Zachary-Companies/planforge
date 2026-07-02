@@ -56,9 +56,11 @@ import {
   detectExhaustedProviders,
   isForcedSameProvider,
   agentScriptFor,
+  agentCommandString,
   providerHasAgent,
   checkProvider,
 } from './providers.mjs';
+import { pathContains } from './platform.mjs';
 
 // Where these scripts live. The per-slice worker engine (the review chain) is
 // resolved relative to this file, so the toolkit works from wherever it is
@@ -106,8 +108,8 @@ const providerLabel = (name) => (name ? name.charAt(0).toUpperCase() + name.slic
 
 // Point the chain's role slots (and prompt labels) at a provider pair.
 function setRoleSlots(builder, reviewer) {
-  process.env.CODEX_CHAIN_CMD = `${shellQuote(agentScriptFor(builder))} '{workspace}'`;
-  process.env.CLAUDE_CHAIN_CMD = `${shellQuote(agentScriptFor(reviewer))} '{workspace}'`;
+  process.env.CODEX_CHAIN_CMD = `${agentCommandString(builder)} '{workspace}'`;
+  process.env.CLAUDE_CHAIN_CMD = `${agentCommandString(reviewer)} '{workspace}'`;
   process.env.CLAUDE_CHAIN_STDIN = '1'; // reviewer slot reads stdin like the builder slot
   process.env.CHAIN_BUILDER_LABEL = providerLabel(builder);
   process.env.CHAIN_REVIEWER_LABEL = providerLabel(reviewer);
@@ -879,7 +881,9 @@ export function agentBranchCleanup(repos, label, logDir, { removeWorktrees = fal
         const list = runGit(['worktree', 'list', '--porcelain'], dir).stdout || '';
         for (const m of list.matchAll(/^worktree (.+)$/gm)) {
           const p = m[1].trim();
-          if (p.includes(`${sep}.planforge${sep}worktrees${sep}`)) runGit(['worktree', 'remove', '--force', p], dir);
+          // git prints forward-slash paths on every platform, so compare
+          // separator-insensitively.
+          if (pathContains(p, '/.planforge/worktrees/')) runGit(['worktree', 'remove', '--force', p], dir);
         }
         runGit(['worktree', 'prune'], dir);
       }

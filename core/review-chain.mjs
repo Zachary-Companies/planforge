@@ -7,6 +7,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync }
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { shellInvocation, isTempPath } from './platform.mjs';
 
 // Parent dir holding the target repo checkouts. Defaults to the current working
 // directory; override with PLANFORGE_WORKSPACE. The orchestrator always passes
@@ -378,7 +379,15 @@ function defaultClaudeCommand(effortOverride) {
 }
 
 function commandExists(command) {
-  const result = spawnSync('sh', ['-lc', `command -v ${shellQuote(command)}`], {
+  // Through the POSIX shell (Git Bash on Windows) so PATH semantics match how
+  // the composed commands will actually run.
+  let inv;
+  try {
+    inv = shellInvocation(`command -v ${shellQuote(command)}`, { login: true });
+  } catch {
+    return false;
+  }
+  const result = spawnSync(inv[0], inv[1], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -674,7 +683,7 @@ function parseWorktrees(porcelain) {
 // A worktree under a temp dir is agent scratch space — safe to drop between
 // iterations since removing a worktree never deletes its branch or committed history.
 function isScratchPath(p) {
-  return p.includes('/tmp/') || p.includes('/var/folders/');
+  return isTempPath(p);
 }
 
 // Best-effort local housekeeping run between iterations: drop the agents' temp
@@ -1243,10 +1252,12 @@ async function runShellStep({ label, command, prompt, cwd, logPath, appendPrompt
   log.write(`$ ${command}\n\n`);
   log.write(`PROMPT:\n${prompt}\n\nOUTPUT:\n`);
 
+  // Always through the POSIX shell — { shell: true } would mean cmd.exe on
+  // Windows, which breaks the POSIX quoting these command strings use.
   const shellCommand = appendPromptAsArg ? `${command} ${shellQuote(prompt)}` : command;
-  const child = spawn(shellCommand, {
+  const [shellBin, shellArgs] = shellInvocation(shellCommand);
+  const child = spawn(shellBin, shellArgs, {
     cwd,
-    shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: process.env,
   });

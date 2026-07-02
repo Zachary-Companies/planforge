@@ -17,7 +17,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, CONFIG_FILENAME, CONFIG_DEFAULTS } from '../core/config.mjs';
-import { agentScriptFor } from '../core/providers.mjs';
+import { agentInvocation } from '../core/providers.mjs';
+import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT } from '../core/platform.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_UI_PORT = 4173;
@@ -96,7 +97,7 @@ function cmdInit() {
         'plansDir: where <slug>-build-plan.md documents live (relative to workspace).',
         'preferences: your stack-preferences.json (written by the preferences form / UI).',
         'workers/fixWorkers/maxSlices: pool sizing — parallel builders, reserved fixers, total slice budget per run.',
-        'providers: priority order per role; a name maps to core/agents/agent-<name>.sh.',
+        'providers: priority order per role; a name maps to core/agents/agent-<name>.mjs (or .sh/.cmd for custom agents).',
         'models: model ids/effort the agent scripts use.',
       ],
       workspace: '.',
@@ -172,24 +173,37 @@ function planFileName(doc, answers) {
   return `${slug}-build-plan.md`;
 }
 
-// Spawn a provider agent script (stdin prompt, $1 = workdir, exit code) and
-// capture its stdout. stderr streams through for visibility.
-function runAgent(script, workdir, prompt, env) {
+// Spawn a provider agent (stdin prompt, workdir arg, exit code) and capture
+// its stdout. stderr streams through for visibility. `argv` is the full
+// cross-platform invocation (e.g. [node, agent-claude.mjs]).
+function runAgent(argv, workdir, prompt, env) {
   return new Promise((resolveP, rejectP) => {
-    const child = spawn(script, [workdir], { env, stdio: ['pipe', 'pipe', 'inherit'] });
+    const child = spawn(argv[0], [...argv.slice(1), workdir], { env, stdio: ['pipe', 'pipe', 'inherit'] });
     let out = '';
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       out += text;
       process.stdout.write(text);
     });
-    child.on('error', (err) => rejectP(new Error(`Could not run ${script}: ${err.message}`)));
+    child.on('error', (err) => rejectP(new Error(`Could not run ${argv.join(' ')}: ${err.message}`)));
     child.on('close', (code) => {
       if (code === 0) resolveP(out);
-      else rejectP(new Error(`${script} exited with code ${code}`));
+      else rejectP(new Error(`${argv[0]} exited with code ${code}`));
     });
     child.stdin.end(prompt);
   });
+}
+
+// Cross-platform invocation for an agent path (the PLANFORGE_PLAN_AGENT seam):
+// .mjs runs through this Node, .sh through the POSIX shell, anything else directly.
+function invocationForPath(path) {
+  if (path.endsWith('.mjs')) return [process.execPath, path];
+  if (path.endsWith('.sh')) {
+    const shell = findPosixShell();
+    if (!shell) throw new Error(POSIX_SHELL_HINT);
+    return [shell, path];
+  }
+  return [path];
 }
 
 // Look up an interview answer by question id — answers may be a flat record
@@ -263,10 +277,17 @@ async function cmdPlan(argv) {
     throw new Error(`planning/prompts.mjs is required for "planforge plan" (${e.message}).`);
   }
 
-  // The plan is authored by the claude provider (stdin prompt, $1 = workdir).
-  // PLANFORGE_PLAN_AGENT overrides the script — a test/UI seam.
-  const script = process.env.PLANFORGE_PLAN_AGENT || agentScriptFor('claude');
-  if (!existsSync(script)) throw new Error(`Agent script missing: ${script}`);
+  // The plan is authored by the claude provider (stdin prompt, workdir arg).
+  // PLANFORGE_PLAN_AGENT overrides the agent path — a test/UI seam.
+  let agentArgv;
+  if (process.env.PLANFORGE_PLAN_AGENT) {
+    const seamPath = resolve(process.env.PLANFORGE_PLAN_AGENT);
+    if (!existsSync(seamPath)) throw new Error(`PLANFORGE_PLAN_AGENT not found: ${seamPath}`);
+    agentArgv = invocationForPath(seamPath);
+  } else {
+    agentArgv = agentInvocation('claude');
+    if (!agentArgv) throw new Error('The claude agent wrapper is missing (core/agents/agent-claude.mjs).');
+  }
   const env = {
     ...process.env,
     CLAUDE_CHAIN_MODEL: config.models.claude,
@@ -286,11 +307,11 @@ async function cmdPlan(argv) {
     const currentPlan = readFileSync(revisePath, 'utf8');
     const feedback = readFileSync(feedbackPath, 'utf8');
     stage('revise', `(model ${config.models.claude})`);
-    const output = await runAgent(script, config.workspace, prompts.buildRevisePrompt({ currentPlan, feedback, preferences }), env);
+    const output = await runAgent(agentArgv, config.workspace, prompts.buildRevisePrompt({ currentPlan, feedback, preferences }), env);
     doc = extractPlanDoc(output);
   } else {
     stage('draft', `(model ${config.models.claude})`);
-    const output = await runAgent(script, config.workspace, prompts.buildInterviewPrompt({ answers, preferences }), env);
+    const output = await runAgent(agentArgv, config.workspace, prompts.buildInterviewPrompt({ answers, preferences }), env);
     doc = extractPlanDoc(output);
   }
   if (!doc) throw new Error('The agent returned no plan content.');
@@ -299,7 +320,7 @@ async function cmdPlan(argv) {
   // implementation-ready. (New plans only; revisions keep their depth.)
   if (!revising && deepen) {
     stage('deepen');
-    const output = await runAgent(script, config.workspace, prompts.buildDeepenPrompt({ currentPlan: doc, preferences }), env);
+    const output = await runAgent(agentArgv, config.workspace, prompts.buildDeepenPrompt({ currentPlan: doc, preferences }), env);
     const deepened = extractPlanDoc(output);
     if (deepened) doc = deepened;
     else console.warn('Deepen pass returned no document — keeping the draft.');
@@ -309,7 +330,7 @@ async function cmdPlan(argv) {
   // stopping early once a pass comes back clean.
   for (let pass = 1; pass <= passes; pass += 1) {
     stage(`review-${pass}`, `of ${passes}`);
-    const output = await runAgent(script, config.workspace,
+    const output = await runAgent(agentArgv, config.workspace,
       prompts.buildConsistencyReviewPrompt({ currentPlan: doc, preferences, passNumber: pass }), env);
     if (output.trim().split('\n').pop().trim() === prompts.PLAN_CONSISTENT_MARKER || output.trim() === prompts.PLAN_CONSISTENT_MARKER) {
       console.log(`Review pass ${pass}: consistent — done reviewing.`);
@@ -473,6 +494,10 @@ async function cmdDoctor(argv) {
   add('node', nodeMajor >= 20, `v${process.versions.node}`, nodeMajor >= 20 ? '' : 'PlanForge needs Node 20 or newer — https://nodejs.org');
   const git = probe('git', ['--version']);
   add('git', git.ok, git.detail, git.ok ? '' : 'Install git: https://git-scm.com');
+  if (IS_WINDOWS) {
+    const shell = findPosixShell();
+    add('shell', Boolean(shell), shell || 'no POSIX shell found', shell ? '' : POSIX_SHELL_HINT);
+  }
   const gh = probe('gh', ['auth', 'status']);
   add('gh', gh.ok, gh.ok ? 'authenticated' : gh.detail, gh.ok ? '' : 'Install the GitHub CLI (https://cli.github.com) and run: gh auth login');
 
