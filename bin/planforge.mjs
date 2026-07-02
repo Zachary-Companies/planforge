@@ -60,6 +60,12 @@ Usage:
         --model claude=claude-opus-4-8 --effort codex=medium
       (providers: claude, claude-fallback (model only), codex, glm)
 
+      --request "<plain English>"      Extra task for this run — the planner
+          turns it into a properly-scoped slice (repeatable). Prefix with
+          "owner/repo: " to pin the repo. --requests-file <json> loads many
+          (array of strings or { repo, text } objects). For hand-authored
+          exact slices there is --seed-slices <file> (advanced).
+
   planforge ui [--port <n>] [--config <path>]
       Start the local web UI (dashboard, plan wizard, preferences form).
 
@@ -441,6 +447,22 @@ async function cmdRun(argv) {
     } else if (arg === '--effort') {
       const [key, v] = parseProviderValue(need(argv, ++i, '--effort'), '--effort', EFFORT_KEYS);
       overrides.models = { ...overrides.models, [key]: v };
+    } else if (arg === '--request') {
+      // Plain-English task for this run; "owner/repo: text" scopes it to a repo.
+      const raw = need(argv, ++i, '--request');
+      const m = raw.match(/^([\w.-]+\/[\w.-]+):\s*(.+)$/s);
+      overrides.requests = [...(overrides.requests || []), m ? { repo: m[1], text: m[2] } : { text: raw }];
+    } else if (arg === '--requests-file') {
+      const p = resolve(need(argv, ++i, '--requests-file'));
+      let arr;
+      try {
+        arr = JSON.parse(readFileSync(p, 'utf8'));
+      } catch (e) {
+        throw new Error(`--requests-file: could not read/parse ${p}: ${e.message}`);
+      }
+      if (!Array.isArray(arr)) throw new Error('--requests-file must contain a JSON array');
+      const items = arr.map((r) => (typeof r === 'string' ? { text: r } : { repo: r.repo, text: r.text }));
+      overrides.requests = [...(overrides.requests || []), ...items];
     }
     else if (arg === '--seed-slices') overrides.seedSlices = resolve(need(argv, ++i, '--seed-slices'));
     else if (arg === '--max-slices') overrides.maxSlices = parseIntFlag(need(argv, ++i, '--max-slices'), '--max-slices', { min: 1 });

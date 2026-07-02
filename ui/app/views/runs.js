@@ -102,9 +102,17 @@ function renderList(root, ctx) {
         <div class="dim" style="padding:2px">Saved to planforge.config.json; applies to the next run and plan wizard. Per-run overrides: <code>planforge run --model claude=… --effort codex=…</code></div>
       </details>
       <details>
-        <summary>Seed slices (optional) — hand-authored slices the planner won't surface</summary>
+        <summary>Extra tasks (optional) — anything you want done this run, in plain English</summary>
+        <div class="dim" style="padding:2px 2px 8px">Describe each task the way you'd tell a teammate — "fix the typo on the login page", "the date picker is broken on mobile". The planner turns each one into a properly-scoped work item (it figures out the files itself) and builds it before other plan work.</div>
+        <div id="req-rows"></div>
+        <button class="btn" id="req-add">+ Add task</button>
+      </details>
+      <details>
+        <summary>Advanced: seed exact slices (JSON)</summary>
+        <div class="dim" style="padding:2px 2px 8px">For when you need precise control the planner shouldn't second-guess. A JSON array; each slice needs <code>id</code> (kebab-case, unique), <code>repo</code> (one of the repos in scope), <code>title</code>, and <code>paths</code> (the files it may touch — this is how parallel workers avoid collisions). Optional: <code>kind</code> ("feature" | "refactor" | "fix"), <code>rationale</code>, <code>notes</code> (guidance for the worker). Prefer "Extra tasks" above unless you know the codebase.</div>
         <textarea id="run-seed" rows="5" placeholder='[
-  { "id": "fix-readme-badges", "repo": "owner/repo", "title": "Fix stale README badges", "paths": ["README.md"] }
+  { "id": "fix-readme-badges", "repo": "owner/repo", "title": "Fix stale README badges", "paths": ["README.md"],
+    "notes": "The CI badge points at the old workflow name; update it and check the other badges while there." }
 ]'></textarea>
       </details>
     </section>
@@ -196,6 +204,22 @@ function renderList(root, ctx) {
     }
   });
 
+  // Extra tasks: one row per plain-English request; the planner scopes them.
+  const reqRows = $('#req-rows', root);
+  const addReqRow = () => {
+    const row = h(`<div class="row req-row" style="align-items:flex-end">
+      <div class="field" style="flex:0 1 220px"><label>Repo</label>
+        <select class="req-repo"><option value="">Let the planner choose</option>${(cfg.repos ?? []).map((r) => `<option value="${esc(r)}">${esc(shortRepo(r))}</option>`).join('')}</select></div>
+      <div class="field" style="flex:1 1 320px"><label>What needs doing?</label>
+        <input class="req-text" placeholder="e.g. fix the typo on the login page"></div>
+      <button class="btn req-remove" title="Remove this task" style="flex:0 0 auto;align-self:flex-end">✕</button>
+    </div>`);
+    row.querySelector('.req-remove').addEventListener('click', () => row.remove());
+    reqRows.appendChild(row);
+    row.querySelector('.req-text').focus();
+  };
+  $('#req-add', root).addEventListener('click', addReqRow);
+
   $('#run-start-btn', root).addEventListener('click', async () => {
     const btn = $('#run-start-btn', root);
     const body = {};
@@ -207,11 +231,31 @@ function renderList(root, ctx) {
     const reviewer = $('#run-reviewer', root)?.value;
     if (builder) body.builder = builder;
     if (reviewer) body.reviewer = reviewer;
+
+    const requests = [...root.querySelectorAll('#req-rows .req-row')].map((row) => ({
+      repo: row.querySelector('.req-repo').value || undefined,
+      text: row.querySelector('.req-text').value.trim(),
+    })).filter((r) => r.text);
+    if (requests.length) body.requests = requests;
+
+    // Validate seed JSON here, with specific messages — not minutes later
+    // when the run rejects it.
     const seedRaw = $('#run-seed', root).value.trim();
     if (seedRaw) {
       try {
         const seed = JSON.parse(seedRaw);
-        if (!Array.isArray(seed)) throw new Error('seed slices must be a JSON array');
+        if (!Array.isArray(seed)) throw new Error('must be a JSON array');
+        const ids = new Set();
+        seed.forEach((s, i) => {
+          if (!s || typeof s !== 'object') throw new Error(`slice ${i + 1} is not an object`);
+          if (!s.id || typeof s.id !== 'string') throw new Error(`slice ${i + 1} needs a string "id"`);
+          if (ids.has(s.id)) throw new Error(`duplicate slice id "${s.id}"`);
+          ids.add(s.id);
+          if (!s.repo || ((cfg.repos ?? []).length && !(cfg.repos ?? []).includes(s.repo))) {
+            throw new Error(`slice "${s.id}": "repo" must be one of the repos in scope (${(cfg.repos ?? []).join(', ') || 'none configured yet'})`);
+          }
+          if (!Array.isArray(s.paths) || s.paths.length === 0) throw new Error(`slice "${s.id}" needs a non-empty "paths" array (the files it may touch)`);
+        });
         body.seedSlices = seed;
       } catch (err) {
         toast(`Seed slices: ${err.message}`, 'err');

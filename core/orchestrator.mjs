@@ -404,7 +404,21 @@ ${lines}
 `;
 }
 
-export function buildPlannerPrompt({ k, repos, feedback, refactorRound, inFlight = [], plansPath, preferencesSummary = '' }) {
+// Plain-English tasks the user typed for this run. The planner owns turning
+// each into a properly-scoped slice — deriving the id/paths/rationale by
+// inspecting the repo — so users never hand-author slice JSON.
+function renderUserRequests(userRequests) {
+  if (!userRequests || userRequests.length === 0) return '';
+  const rows = userRequests
+    .map((r) => `  - [${r.id}]${r.repo ? ` (repo ${r.repo})` : ''} ${r.text}`)
+    .join('\n');
+  return `USER-REQUESTED TASKS — the user asked for these IN THIS RUN, in plain English. They take priority over plan work: turn each into a properly-scoped slice (YOU derive the id, title, paths, and rationale by inspecting the repo — the user has not scoped it) and include it in your next batch(es) before other plan work, unless it conflicts with in-flight work (defer it to a later batch, do not drop it). If a request names no repo, choose the repo it belongs in. On every slice derived from a request, add "fromRequest": "<the request id>" so the orchestrator can mark it handled:
+${rows}
+
+`;
+}
+
+export function buildPlannerPrompt({ k, repos, feedback, refactorRound, inFlight = [], plansPath, preferencesSummary = '', userRequests = [] }) {
   const constraint4 = refactorRound
     ? `4. REFACTOR SLICE: EXACTLY ONE of the slices you return must be a behavior-preserving large-file refactor — set its "kind":"refactor" and the rest "kind":"feature". Choose the refactor target with this guidance, and make its "paths" the file being split plus where its new modules will live so the feature slices can avoid them:\n${REFACTOR_DIRECTIVE}`
     : `4. Do NOT pick large-file refactors right now — they touch many files and collide with concurrent feature work. Pick feature slices from the build plans (all "kind":"feature").`;
@@ -413,7 +427,7 @@ export function buildPlannerPrompt({ k, repos, feedback, refactorRound, inFlight
     : '';
   return `You are the PLANNER for a continuous parallel build orchestrator. Choose UP TO ${k} work slices that can be built IN PARALLEL right now WITHOUT conflicting with each other OR with the work already in flight below. Return FEWER than ${k} (even just 1) if there is not that much genuinely non-conflicting, unblocked, high-value work available right now — NEVER pad the list with conflicting, blocked, or low-value slices. Return an empty array [] only if there is truly nothing actionable.
 
-${renderInFlight(inFlight)}PLAN SOURCES — survey EVERY build plan in ${plansPath} (the files matching *-build-plan.md). Each plan uses the same house format:
+${renderInFlight(inFlight)}${renderUserRequests(userRequests)}PLAN SOURCES — survey EVERY build plan in ${plansPath} (the files matching *-build-plan.md). Each plan uses the same house format:
   - "## 3. Open decisions" — decisions D1..Dn, each marked Proposed | Accepted | Blocked. Decisions GATE slices: a slice whose phase or status says blocked-on-Dx, where decision Dx is NOT Accepted, is NOT buildable — never pick it, no matter how valuable.
   - "## 4. Phases" — "### Phase N — <name>" sections, each listing that phase's slices with their id, title, paths, status (pending | building | shipped | blocked-on-Dx), and acceptance criteria. Honor phase order: never pull a later-phase slice before its prerequisite phases have merged. Only slices whose status is pending are candidates.
   - "## 5. Status ledger" — append-only verification history; use it to judge how current each plan's statuses are, and verify against the repos when in doubt.
@@ -540,7 +554,7 @@ export function validateSlices(arr, k, repos, inFlight = []) {
 //   slices non-empty -> launch them; empty:true -> planner found nothing actionable
 //   right now (counts toward the dry threshold); empty:false + [] -> hard failure.
 // Callers serialize these so each call sees the latest in-flight set.
-async function planSome({ k, repos, inFlight, logDir, logTag, refactorRound, workspace, plansPath, preferences }) {
+async function planSome({ k, repos, inFlight, logDir, logTag, refactorRound, workspace, plansPath, preferences, userRequests = [] }) {
   const plan = builderAgentCommand(workspace);
   const preferencesSummary = await renderPreferencesSummaryLazy(preferences);
   let feedback = '';
@@ -552,7 +566,7 @@ async function planSome({ k, repos, inFlight, logDir, logTag, refactorRound, wor
       out = await runShellStep({
         label: `Planner ${logTag} (attempt ${attempt}/${MAX_PLAN_RETRIES}, up to ${k} slices, ${inFlight.length} in flight)`,
         command: plan.command,
-        prompt: buildPlannerPrompt({ k, repos, feedback, refactorRound, inFlight, plansPath, preferencesSummary }),
+        prompt: buildPlannerPrompt({ k, repos, feedback, refactorRound, inFlight, plansPath, preferencesSummary, userRequests }),
         cwd: workspace,
         logPath: lastLogPath,
         appendPromptAsArg: plan.appendPromptAsArg,
@@ -1061,6 +1075,12 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   };
 
   const mergedPrs = [];
+  // Plain-English user requests still waiting for the planner to slice them.
+  const pendingRequests = (args.requests || []).map((r, i) => ({
+    id: r.id || `req-${i + 1}`,
+    repo: r.repo || null,
+    text: String(r.text || '').trim(),
+  })).filter((r) => r.text);
   const inFlight = new Map(); // slotId -> { slice } currently building
   const ready = []; // planned, validated, not yet launched
   const active = new Map(); // slotId -> Promise<{ slotId, result }>
@@ -1176,8 +1196,20 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
           workspace: args.workspace,
           plansPath,
           preferences: args.preferences ?? null,
+          userRequests: pendingRequests,
         });
         const { slices, empty } = planResult;
+        // A slice tagged fromRequest satisfies that user request — stop
+        // re-asking the planner for it.
+        for (const s of slices) {
+          if (!s.fromRequest) continue;
+          const idx = pendingRequests.findIndex((r) => r.id === s.fromRequest);
+          if (idx !== -1) {
+            console.log(`User request [${s.fromRequest}] planned as slice "${s.id}".`);
+            emit('request-planned', { request: s.fromRequest, sliceId: s.id });
+            pendingRequests.splice(idx, 1);
+          }
+        }
         // Failover: if the planner ran on a builder that's out of credits /
         // rate-limited, demote it and re-select so the NEXT plan attempt uses an
         // available provider — a provider-exhaustion failure must not count toward
@@ -1429,7 +1461,10 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   const exhausted = [...fixAttempts.entries()].filter(([, n]) => n >= MAX_FIX_ATTEMPTS).map(([k]) => k);
   console.log(`\nDone. ${launchedCount} slice(s) attempted, ${mergedTotal} PR(s) merged${fixCap > 0 ? `, ${fixedCount} fixed PR(s) landed` : ''}. Transcripts: ${runDir}`);
   if (exhausted.length) console.warn(`Fix lane gave up on ${exhausted.length} PR(s) after ${MAX_FIX_ATTEMPTS} tries: ${exhausted.join(', ')}`);
-  emit('run-done', { launched: launchedCount, mergedPrs: mergedTotal, failed: failedCount, fixed: fixedCount, fixUnresolved: exhausted.length, elapsedMs: Date.now() - startedAt });
+  if (pendingRequests.length) {
+    console.warn(`User request(s) never planned this run: ${pendingRequests.map((r) => `[${r.id}] ${r.text}`).join('; ')} — the planner ran dry or they conflicted all run; try again or make them more specific.`);
+  }
+  emit('run-done', { launched: launchedCount, mergedPrs: mergedTotal, failed: failedCount, fixed: fixedCount, fixUnresolved: exhausted.length, unplannedRequests: pendingRequests.length, elapsedMs: Date.now() - startedAt });
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,6 +1492,7 @@ function buildRunArgs(config, overrides) {
     depsLink: overrides.depsLink ?? true,
     planOnly: !!overrides.planOnly,
     dryRun: !!overrides.dryRun,
+    requests: overrides.requests ?? [],
   };
 }
 

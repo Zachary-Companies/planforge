@@ -498,3 +498,17 @@ test('POST /api/config/models updates the models block and rejects bad fields', 
   });
   assert.equal(unknown.status, 400);
 });
+
+test('POST /api/runs validates plain-English requests', async () => {
+  const bad = await fetch(`${base}/api/runs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: [{ text: '' }] }),
+  });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /non-empty "text"/);
+  const notArray = await fetch(`${base}/api/runs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: 'do stuff' }),
+  });
+  assert.equal(notArray.status, 400);
+});

@@ -652,6 +652,20 @@ async function startRun(res, ctx, body) {
     json(res, 400, { error: 'seedSlices must be an array of slice objects' });
     return;
   }
+  // requests: plain-English extra tasks; the planner scopes them into slices.
+  if (body.requests !== undefined) {
+    if (!Array.isArray(body.requests)) { json(res, 400, { error: 'requests must be an array' }); return; }
+    for (const r of body.requests) {
+      if (!r || typeof r !== 'object' || typeof r.text !== 'string' || !r.text.trim() || r.text.length > 4000) {
+        json(res, 400, { error: 'each request needs a non-empty "text" (plain English, up to 4000 chars)' });
+        return;
+      }
+      if (r.repo !== undefined && r.repo !== null && r.repo !== '' && typeof r.repo !== 'string') {
+        json(res, 400, { error: 'request "repo" must be a string when given' });
+        return;
+      }
+    }
+  }
 
   const cmd = resolveCliCommand('PLANFORGE_RUN_CMD');
   if (!cmd) {
@@ -674,6 +688,13 @@ async function startRun(res, ctx, body) {
     const seedFile = join(ctx.tmpDir, `seed-slices-${Date.now().toString(36)}.json`);
     writeFileSync(seedFile, `${JSON.stringify(body.seedSlices, null, 2)}\n`);
     args.push('--seed-slices', seedFile);
+  }
+  if (Array.isArray(body.requests) && body.requests.length) {
+    mkdirSync(ctx.tmpDir, { recursive: true });
+    const reqFile = join(ctx.tmpDir, `requests-${Date.now().toString(36)}.json`);
+    const items = body.requests.map((r) => ({ ...(r.repo ? { repo: r.repo } : {}), text: r.text.trim() }));
+    writeFileSync(reqFile, `${JSON.stringify(items, null, 2)}\n`);
+    args.push('--requests-file', reqFile);
   }
 
   const listRunDirs = () => {

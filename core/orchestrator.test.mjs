@@ -685,3 +685,44 @@ test('runOrchestrator refuses an empty repo list', POOL, async (t) => {
   const config = loadConfig(ws);
   await assert.rejects(runOrchestrator(config, { dryRun: true }), /No repos in scope/);
 });
+
+// ---- plain-English user requests -> planner-scoped slices ----
+test('buildPlannerPrompt includes user requests with the fromRequest directive', () => {
+  const prompt = buildPlannerPrompt({
+    k: 2, repos: ['o/a'], plansPath: '/ws/plans',
+    userRequests: [
+      { id: 'req-1', repo: 'o/a', text: 'fix the typo on the login page' },
+      { id: 'req-2', repo: null, text: 'the date picker is broken on mobile' },
+    ],
+  });
+  assert.ok(prompt.includes('USER-REQUESTED TASKS'));
+  assert.ok(prompt.includes('[req-1] (repo o/a) fix the typo on the login page'));
+  assert.ok(prompt.includes('[req-2] the date picker is broken on mobile'));
+  assert.ok(prompt.includes('"fromRequest"'), 'tells the planner how to tag derived slices');
+
+  const bare = buildPlannerPrompt({ k: 2, repos: ['o/a'], plansPath: '/ws/plans' });
+  assert.ok(!bare.includes('USER-REQUESTED TASKS'), 'no request block when there are none');
+});
+
+test('pool: a fromRequest slice clears its pending request for later plans', POOL, async () => {
+  const seenRequests = [];
+  let call = 0;
+  const planSome = async ({ userRequests }) => {
+    call += 1;
+    seenRequests.push(userRequests.map((r) => r.id));
+    if (call === 1) {
+      return { slices: [{ id: 'fix-login-typo', repo: 'o/a', title: 'Fix login typo', kind: 'feature', paths: ['web/login.html'], fromRequest: 'req-1' }], empty: false };
+    }
+    return { slices: [], empty: true };
+  };
+  const runWorker = async (a) => ({ ...a, ok: true, branch: 'worker-1/x' });
+  await runPool({
+    args: makeArgs({ workers: 1, requests: [{ text: 'fix the typo on the login page' }] }),
+    runDir: '/tmp/run-req', roles, sliceBudget: 5,
+    deps: { planSome, runWorker, mergeWorkerPrs: () => [], runReconcile: async () => {} },
+  });
+  assert.deepEqual(seenRequests[0], ['req-1'], 'first plan sees the pending request');
+  for (const later of seenRequests.slice(1)) {
+    assert.deepEqual(later, [], 'request no longer pending after its slice was planned');
+  }
+});

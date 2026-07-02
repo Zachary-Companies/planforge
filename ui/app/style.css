@@ -915,3 +915,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Extra-tasks rows: repo picker, free-text task, compact remove button. */
+.run-setup .req-row { grid-template-columns: 220px 1fr auto; }
+.run-setup .req-row .req-remove { width: 40px; }
