@@ -154,8 +154,8 @@ may fill both).
 
 ## Provenance
 
-The core is a genericized fork of the (private) bodji-utils orchestrator:
-continuous pool, serial merge lane, fix lane, seed slices, provider failover,
-review gate (drafts are never force-readied), and post-merge branch hygiene
-are inherited behaviors with Bodji-specific repos/paths/prompts made
-config-driven.
+The core is a genericized extraction of a private orchestrator that has been
+merging real PRs across a multi-repo codebase for weeks: continuous pool,
+serial merge lane, fix lane, seed slices, provider failover, review gate
+(drafts are never force-readied), and post-merge branch hygiene are inherited
+behaviors with the project-specific repos/paths/prompts made config-driven.
