@@ -1,0 +1,400 @@
+{
+  "version": 1,
+  "preferences": [
+    {
+      "id": "general-languages",
+      "group": "general",
+      "label": "Which programming languages do you prefer?",
+      "help": "Pick any you like reading or already know a little. Agents write the code either way — this just steers what the code is written in.",
+      "type": "multiselect",
+      "options": ["TypeScript", "JavaScript", "Python", "Go", "Rust", "Java", "Kotlin", "Swift", "C#", "Ruby", "PHP", "No preference", "Other"],
+      "mapsTo": "general.languages"
+    },
+    {
+      "id": "general-package-manager",
+      "group": "general",
+      "label": "Preferred package manager?",
+      "help": "The tool that installs a project's dependencies. If unsure, 'No preference' picks the standard one for your language.",
+      "type": "select",
+      "options": ["npm", "pnpm", "yarn", "bun", "uv (Python)", "pip (Python)", "cargo (Rust)", "go modules", "No preference", "Other"],
+      "mapsTo": "general.packageManager"
+    },
+    {
+      "id": "general-license",
+      "group": "general",
+      "label": "Default license for your projects?",
+      "help": "Controls what others may do with your code. MIT is the permissive default; 'Proprietary' keeps all rights.",
+      "type": "select",
+      "options": ["MIT", "Apache-2.0", "GPL-3.0", "BSD-3-Clause", "MPL-2.0", "Unlicense (public domain)", "Proprietary (all rights reserved)", "No preference", "Other"],
+      "mapsTo": "general.license"
+    },
+    {
+      "id": "general-testing",
+      "group": "general",
+      "label": "Preferred testing tool?",
+      "help": "How automated checks run against the code. Agents write tests regardless; this picks the runner.",
+      "type": "select",
+      "options": ["Vitest", "Jest", "node:test (built-in)", "Playwright (browser)", "Cypress (browser)", "pytest (Python)", "go test", "No preference", "Other"],
+      "mapsTo": "general.testing"
+    },
+    {
+      "id": "general-ci",
+      "group": "general",
+      "label": "Continuous integration?",
+      "help": "A service that runs your tests automatically on every change. GitHub Actions is free for public repos.",
+      "type": "select",
+      "options": ["GitHub Actions", "GitLab CI", "CircleCI", "Buildkite", "None for now", "No preference", "Other"],
+      "mapsTo": "general.ci"
+    },
+    {
+      "id": "general-code-style",
+      "group": "general",
+      "label": "Code formatting / linting?",
+      "help": "Keeps all code looking consistent so diffs stay readable. Safe to leave to the planner.",
+      "type": "select",
+      "options": ["Prettier + ESLint", "Biome", "ESLint only", "Ruff (Python)", "Black (Python)", "gofmt (Go)", "No preference", "Other"],
+      "mapsTo": "general.codeStyle"
+    },
+
+    {
+      "id": "webapp-framework",
+      "group": "webApp",
+      "label": "Web UI framework?",
+      "help": "The library that builds what users see in the browser. React has the biggest ecosystem; HTMX and plain HTML keep things simplest.",
+      "type": "select",
+      "options": ["React", "Vue", "Svelte", "Solid", "Angular", "HTMX", "Plain HTML/CSS/JS (no framework)", "No preference", "Other"],
+      "mapsTo": "webApp.framework"
+    },
+    {
+      "id": "webapp-meta",
+      "group": "webApp",
+      "label": "Meta-framework or build tool?",
+      "help": "The scaffolding around the UI framework: dev server, routing, bundling. Vite is the light default; Next/Nuxt/SvelteKit add server rendering.",
+      "type": "select",
+      "options": ["Vite", "Next.js", "Nuxt", "SvelteKit", "Remix / React Router", "Astro", "No build tool", "No preference", "Other"],
+      "mapsTo": "webApp.meta"
+    },
+    {
+      "id": "webapp-styling",
+      "group": "webApp",
+      "label": "How should styling be done?",
+      "help": "How the app gets its look. Tailwind is popular with agents and humans alike; plain CSS is the zero-dependency option.",
+      "type": "select",
+      "options": ["Tailwind CSS", "Plain CSS", "CSS Modules", "Sass/SCSS", "styled-components", "Bootstrap", "No preference", "Other"],
+      "mapsTo": "webApp.styling"
+    },
+    {
+      "id": "webapp-state",
+      "group": "webApp",
+      "label": "State management?",
+      "help": "How the app keeps track of data on screen. Built-ins are enough for most apps — only pick a library if you know you want it.",
+      "type": "select",
+      "options": ["Framework built-ins (context/hooks/stores)", "Redux Toolkit", "Zustand", "TanStack Query", "MobX", "Pinia (Vue)", "No preference", "Other"],
+      "mapsTo": "webApp.state"
+    },
+    {
+      "id": "webapp-backend",
+      "group": "webApp",
+      "label": "Backend pairing for web apps?",
+      "help": "The server side that stores data and enforces rules. 'No separate backend' means a static site or serverless-only app.",
+      "type": "select",
+      "options": ["Node + Express", "Node + Fastify", "Hono", "Next.js API routes", "Django (Python)", "Rails (Ruby)", "Laravel (PHP)", "Go (chi / net/http)", "No separate backend", "No preference", "Other"],
+      "mapsTo": "webApp.backend"
+    },
+    {
+      "id": "webapp-db",
+      "group": "webApp",
+      "label": "Database for web apps?",
+      "help": "Where the app's data lives. PostgreSQL is the safe general choice; SQLite is a single file with zero setup — great for small apps.",
+      "type": "select",
+      "options": ["PostgreSQL", "MySQL", "SQLite", "MongoDB", "Supabase (hosted Postgres)", "Firebase", "No database", "No preference", "Other"],
+      "mapsTo": "webApp.db"
+    },
+    {
+      "id": "webapp-orm",
+      "group": "webApp",
+      "label": "Database access layer (ORM)?",
+      "help": "How code talks to the database. An ORM adds convenience and type-safety; raw SQL keeps things transparent.",
+      "type": "select",
+      "options": ["Prisma", "Drizzle", "Kysely", "Knex", "Raw SQL", "Mongoose (MongoDB)", "No preference", "Other"],
+      "mapsTo": "webApp.orm"
+    },
+    {
+      "id": "webapp-auth",
+      "group": "webApp",
+      "label": "How should sign-in work?",
+      "help": "How people prove who they are. Email + password in your own database is simplest to own; hosted providers offload the hard parts.",
+      "type": "select",
+      "options": ["Email + password (own database)", "Magic links (email codes)", "Auth.js / NextAuth", "Clerk", "Supabase Auth", "Firebase Auth", "OAuth only (Google/GitHub/Apple)", "No sign-in needed", "No preference", "Other"],
+      "mapsTo": "webApp.auth"
+    },
+    {
+      "id": "webapp-hosting",
+      "group": "webApp",
+      "label": "Where should web apps be hosted?",
+      "help": "Where the app runs on the internet. Most of these have free tiers good enough for small apps.",
+      "type": "select",
+      "options": ["Vercel", "Netlify", "Cloudflare", "Fly.io", "Render", "Railway", "AWS", "Self-hosted VPS", "No preference", "Other"],
+      "mapsTo": "webApp.hosting"
+    },
+
+    {
+      "id": "mobileapp-framework",
+      "group": "mobileApp",
+      "label": "Mobile app approach?",
+      "help": "One codebase for both platforms (React Native, Flutter) is cheapest; native apps feel most polished; a PWA skips app stores entirely.",
+      "type": "select",
+      "options": ["React Native (Expo)", "React Native (bare)", "Flutter", "Native iOS (SwiftUI)", "Native Android (Kotlin/Compose)", "Both native (Swift + Kotlin)", "Progressive Web App (PWA)", "No preference", "Other"],
+      "mapsTo": "mobileApp.framework"
+    },
+    {
+      "id": "mobileapp-backend",
+      "group": "mobileApp",
+      "label": "Backend for mobile apps?",
+      "help": "Where the mobile app's data lives. Reusing the same backend as your web app avoids building things twice.",
+      "type": "select",
+      "options": ["Same backend as my web app", "Supabase", "Firebase", "Custom API", "No backend needed (offline only)", "No preference", "Other"],
+      "mapsTo": "mobileApp.backend"
+    },
+    {
+      "id": "mobileapp-navigation",
+      "group": "mobileApp",
+      "label": "Navigation library?",
+      "help": "How the app moves between screens. Safe to leave to the planner — it follows your framework choice.",
+      "type": "select",
+      "options": ["Expo Router", "React Navigation", "Flutter Navigator", "Native navigation", "No preference", "Other"],
+      "mapsTo": "mobileApp.navigation"
+    },
+    {
+      "id": "mobileapp-distribution",
+      "group": "mobileApp",
+      "label": "How will the app reach phones?",
+      "help": "App stores reach everyone but require developer accounts and review; internal/TestFlight is fine for a small group; a PWA installs from the browser.",
+      "type": "select",
+      "options": ["App Store + Google Play", "TestFlight / internal testing only", "Expo development builds", "Web install (PWA) only", "No preference", "Other"],
+      "mapsTo": "mobileApp.distribution"
+    },
+
+    {
+      "id": "api-language",
+      "group": "api",
+      "label": "Language for backend services?",
+      "help": "The language your API is written in. TypeScript and Python have the most examples; Go and Rust run leaner.",
+      "type": "select",
+      "options": ["TypeScript (Node)", "Python", "Go", "Rust", "Java / Kotlin", "C# / .NET", "No preference", "Other"],
+      "mapsTo": "api.language"
+    },
+    {
+      "id": "api-framework",
+      "group": "api",
+      "label": "API framework?",
+      "help": "The library that handles requests. This should match your language choice — 'No preference' lets the planner pair them sensibly.",
+      "type": "select",
+      "options": ["Fastify (Node)", "Express (Node)", "Hono (Node/edge)", "NestJS (Node)", "FastAPI (Python)", "Django REST Framework", "Flask (Python)", "Gin / Echo (Go)", "Axum (Rust)", "Spring Boot (Java)", "ASP.NET Core", "No preference", "Other"],
+      "mapsTo": "api.framework"
+    },
+    {
+      "id": "api-style",
+      "group": "api",
+      "label": "API style?",
+      "help": "The shape of the interface. REST with JSON is the boring default almost everything understands.",
+      "type": "select",
+      "options": ["REST (JSON)", "GraphQL", "tRPC", "gRPC", "WebSockets / realtime", "No preference", "Other"],
+      "mapsTo": "api.apiStyle"
+    },
+    {
+      "id": "api-db",
+      "group": "api",
+      "label": "Database for services?",
+      "help": "The service's system of record. PostgreSQL is the safe general answer; SQLite is great for single-server apps.",
+      "type": "select",
+      "options": ["PostgreSQL", "MySQL", "SQLite", "MongoDB", "DynamoDB", "Redis (as primary store)", "No database", "No preference", "Other"],
+      "mapsTo": "api.db"
+    },
+    {
+      "id": "api-cache",
+      "group": "api",
+      "label": "Caching layer?",
+      "help": "Speeds up repeated reads. Most small apps don't need one — 'None needed' is a perfectly good answer.",
+      "type": "select",
+      "options": ["Redis", "Valkey", "Memcached", "In-process memory cache", "None needed", "No preference", "Other"],
+      "mapsTo": "api.cache"
+    },
+    {
+      "id": "api-queue",
+      "group": "api",
+      "label": "Background jobs / queue?",
+      "help": "For work that shouldn't block a request (emails, imports). Database-backed jobs avoid adding infrastructure.",
+      "type": "select",
+      "options": ["BullMQ (Redis)", "RabbitMQ", "Kafka", "SQS", "Database-backed jobs", "None needed", "No preference", "Other"],
+      "mapsTo": "api.queue"
+    },
+    {
+      "id": "api-docs",
+      "group": "api",
+      "label": "API documentation?",
+      "help": "How other people (or your own frontend) learn what the API does. OpenAPI generates interactive docs from the code.",
+      "type": "select",
+      "options": ["OpenAPI / Swagger", "GraphQL schema + introspection", "Markdown docs in the repo", "Generated reference site", "None for now", "No preference", "Other"],
+      "mapsTo": "api.docs"
+    },
+    {
+      "id": "api-hosting",
+      "group": "api",
+      "label": "Where should services run?",
+      "help": "Where the API lives in production. Fly/Render/Railway are simple; AWS/GCP/Azure scale further but ask more of you.",
+      "type": "select",
+      "options": ["Fly.io", "Render", "Railway", "AWS", "GCP", "Azure", "Cloudflare Workers", "Self-hosted VPS", "No preference", "Other"],
+      "mapsTo": "api.hosting"
+    },
+
+    {
+      "id": "cli-language",
+      "group": "cli",
+      "label": "Language for command-line tools?",
+      "help": "Go and Rust produce single-file binaries anyone can run; Node and Python are quickest to iterate on.",
+      "type": "select",
+      "options": ["TypeScript (Node)", "Python", "Go", "Rust", "Shell / Bash", "No preference", "Other"],
+      "mapsTo": "cli.language"
+    },
+    {
+      "id": "cli-arg-parsing",
+      "group": "cli",
+      "label": "Argument parsing library?",
+      "help": "How the tool reads flags like --help and --verbose. Safe to leave to the planner — it follows your language choice.",
+      "type": "select",
+      "options": ["Commander (Node)", "yargs (Node)", "argparse (Python)", "Click / Typer (Python)", "Cobra (Go)", "clap (Rust)", "Hand-rolled / minimal", "No preference", "Other"],
+      "mapsTo": "cli.argParsing"
+    },
+    {
+      "id": "cli-distribution",
+      "group": "cli",
+      "label": "How should CLI tools be distributed?",
+      "help": "How other people install your tool. npm/PyPI if they have the runtime; prebuilt binaries or Homebrew if they don't.",
+      "type": "select",
+      "options": ["npm", "PyPI", "Homebrew", "Prebuilt binaries (GitHub Releases)", "cargo install", "go install", "Docker image", "No preference", "Other"],
+      "mapsTo": "cli.distribution"
+    },
+
+    {
+      "id": "data-language",
+      "group": "data",
+      "label": "Language for data work?",
+      "help": "Python owns the data ecosystem; SQL-first (dbt) fits when the data already lives in a warehouse.",
+      "type": "select",
+      "options": ["Python", "SQL-first (dbt)", "R", "Julia", "TypeScript (Node)", "No preference", "Other"],
+      "mapsTo": "data.language"
+    },
+    {
+      "id": "data-work-style",
+      "group": "data",
+      "label": "Notebooks or pipelines?",
+      "help": "Notebooks are great for exploring; pipelines are repeatable scripts you can schedule. Many projects start as one and become the other.",
+      "type": "select",
+      "options": ["Notebooks (exploratory)", "Scripted pipelines (repeatable)", "Notebooks that graduate into pipelines", "No preference", "Other"],
+      "mapsTo": "data.workStyle"
+    },
+    {
+      "id": "data-orchestration",
+      "group": "data",
+      "label": "Scheduling / orchestration?",
+      "help": "What runs your data jobs on a schedule. Cron (or none) is plenty until you have many interdependent jobs.",
+      "type": "select",
+      "options": ["Cron / scheduled scripts", "Airflow", "Dagster", "Prefect", "dbt Cloud", "None needed", "No preference", "Other"],
+      "mapsTo": "data.orchestration"
+    },
+    {
+      "id": "data-storage",
+      "group": "data",
+      "label": "Where should data live?",
+      "help": "DuckDB and SQLite are single files with serious query power; warehouses (BigQuery/Snowflake) suit team-scale data.",
+      "type": "select",
+      "options": ["PostgreSQL", "DuckDB", "SQLite", "Parquet files", "BigQuery", "Snowflake", "CSV / flat files", "No preference", "Other"],
+      "mapsTo": "data.storage"
+    },
+    {
+      "id": "data-viz",
+      "group": "data",
+      "label": "Charts and dashboards?",
+      "help": "How results get seen. Streamlit turns a Python script into a small web app; Metabase/Grafana are point-and-click dashboards.",
+      "type": "select",
+      "options": ["Matplotlib / Seaborn", "Plotly", "Streamlit", "Dash", "Metabase", "Grafana", "Notebook output only", "No preference", "Other"],
+      "mapsTo": "data.viz"
+    }
+  ],
+  "interview": [
+    {
+      "id": "idea",
+      "label": "What are you building?",
+      "help": "Describe it the way you would to a friend — what it does, and why you want it to exist. Plain English beats jargon.",
+      "type": "textarea",
+      "placeholder": "A small web app where my friends and I keep shared todo lists — groceries, trip planning — and everyone sees updates."
+    },
+    {
+      "id": "users",
+      "label": "Who will use it?",
+      "help": "The actual people: just you, your family, a team at work, paying customers?",
+      "type": "text",
+      "placeholder": "Me and about ten friends"
+    },
+    {
+      "id": "app-kinds",
+      "label": "What kind of app is it?",
+      "help": "Pick everything that applies — lots of projects are a web app plus an API behind it. 'Not sure' is a fine answer.",
+      "type": "multiselect",
+      "placeholder": "",
+      "options": ["Web app", "Mobile app", "API / backend service", "Command-line tool", "Data / analytics project", "Not sure — recommend something"]
+    },
+    {
+      "id": "must-haves",
+      "label": "What are the 3–5 must-have features?",
+      "help": "The things version 1 cannot ship without. Everything else can wait for version 2.",
+      "type": "textarea",
+      "placeholder": "1. Shared lists  2. Invite a friend by link  3. Check items off  4. Works on phones"
+    },
+    {
+      "id": "integrations",
+      "label": "What does it need to connect to?",
+      "help": "Other services, APIs, data sources, or files it must read or write — or nothing at all.",
+      "type": "textarea",
+      "placeholder": "Nothing external — maybe email for invites later"
+    },
+    {
+      "id": "sign-in",
+      "label": "Do people need to sign in?",
+      "help": "Sign-in adds real work, so only ask for what you need. 'Not sure' lets the plan recommend the simplest thing that fits.",
+      "type": "select",
+      "placeholder": "",
+      "options": ["No sign-in needed", "Simple email + password", "Social sign-in (Google, Apple, GitHub)", "Team or organization accounts", "Not sure — recommend something"]
+    },
+    {
+      "id": "scale",
+      "label": "How many people will use it?",
+      "help": "Small is a feature — it unlocks simpler, cheaper choices for hosting and databases.",
+      "type": "select",
+      "placeholder": "",
+      "options": ["Just me", "A small group (friends, family, my team)", "Public — anyone on the internet", "Not sure yet"]
+    },
+    {
+      "id": "constraints",
+      "label": "Any constraints?",
+      "help": "Budget limits, hosting requirements, privacy rules, deadlines, devices it must run on — anything the plan must respect.",
+      "type": "textarea",
+      "placeholder": "Free or nearly-free hosting; my friends' data shouldn't be sold to anyone"
+    },
+    {
+      "id": "done-when",
+      "label": "It's done when…",
+      "help": "Describe the concrete moment you'd call version 1 finished. The more checkable, the better the plan.",
+      "type": "textarea",
+      "placeholder": "Two of us check off groceries on the same list from our own phones, and it just works"
+    },
+    {
+      "id": "anything-else",
+      "label": "Anything else the plan should know?",
+      "help": "Names you like, look and feel, things you tried before that didn't work, strong opinions — anything at all.",
+      "type": "textarea",
+      "placeholder": ""
+    }
+  ]
+}

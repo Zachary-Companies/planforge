@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://planforge.dev/schemas/stack-preferences.json",
+  "title": "PlanForge stack preferences",
+  "description": "Which technologies the user prefers for each kind of app. Written by the preferences form (planning/questions.json drives it); read by the interview and planner prompts via renderPreferencesSummary(). Every group and field is optional — 'No preference' answers are simply omitted, and the planner then chooses boring, mainstream defaults and records them as decisions. Field values are free-form strings; the option lists in questions.json are suggestions, not enums.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Preferences schema version. Currently 1."
+    },
+    "general": {
+      "type": "object",
+      "description": "Cross-cutting defaults that apply to every project regardless of kind.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "languages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Preferred programming languages, most preferred first."
+        },
+        "packageManager": { "type": "string", "description": "e.g. npm, pnpm, yarn, bun, uv, cargo" },
+        "license": { "type": "string", "description": "e.g. MIT, Apache-2.0, GPL-3.0, proprietary" },
+        "testing": { "type": "string", "description": "e.g. vitest, jest, node:test, pytest, playwright" },
+        "ci": { "type": "string", "description": "e.g. github-actions, gitlab-ci, none" },
+        "codeStyle": { "type": "string", "description": "e.g. prettier + eslint, biome, ruff, gofmt" }
+      }
+    },
+    "webApp": {
+      "type": "object",
+      "description": "Preferences for browser-based applications.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "framework": { "type": "string", "description": "e.g. react, vue, svelte, solid, htmx, none" },
+        "meta": { "type": "string", "description": "Meta-framework or bundler, e.g. vite, next, nuxt, sveltekit, astro" },
+        "styling": { "type": "string", "description": "e.g. tailwind, plain css, css modules, sass" },
+        "state": { "type": "string", "description": "e.g. react built-ins, redux toolkit, zustand, tanstack query" },
+        "backend": { "type": "string", "description": "Backend pairing, e.g. node + express, node + fastify, next api routes, django" },
+        "db": { "type": "string", "description": "e.g. postgres, mysql, sqlite, mongodb, supabase" },
+        "orm": { "type": "string", "description": "e.g. prisma, drizzle, kysely, raw sql" },
+        "auth": { "type": "string", "description": "e.g. email + password, magic links, auth.js, clerk, none" },
+        "hosting": { "type": "string", "description": "e.g. vercel, netlify, cloudflare, fly.io, self-hosted" }
+      }
+    },
+    "mobileApp": {
+      "type": "object",
+      "description": "Preferences for phone/tablet applications.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "framework": { "type": "string", "description": "e.g. react-native-expo, flutter, swiftui, kotlin-compose, pwa" },
+        "backend": { "type": "string", "description": "e.g. same as web app, supabase, firebase, custom api" },
+        "navigation": { "type": "string", "description": "e.g. expo router, react navigation, native" },
+        "distribution": { "type": "string", "description": "e.g. app stores, testflight/internal, pwa only" }
+      }
+    },
+    "api": {
+      "type": "object",
+      "description": "Preferences for backend services / APIs.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "language": { "type": "string", "description": "e.g. typescript, python, go, rust" },
+        "framework": { "type": "string", "description": "e.g. fastify, express, hono, fastapi, gin, axum" },
+        "apiStyle": { "type": "string", "description": "e.g. rest, graphql, trpc, grpc" },
+        "db": { "type": "string", "description": "e.g. postgres, mysql, sqlite, mongodb, dynamodb" },
+        "cache": { "type": "string", "description": "e.g. redis, valkey, in-process, none" },
+        "queue": { "type": "string", "description": "e.g. bullmq, rabbitmq, kafka, sqs, db-backed, none" },
+        "docs": { "type": "string", "description": "e.g. openapi, graphql schema, markdown in repo" },
+        "hosting": { "type": "string", "description": "e.g. fly.io, render, railway, aws, self-hosted" }
+      }
+    },
+    "cli": {
+      "type": "object",
+      "description": "Preferences for command-line tools.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "language": { "type": "string", "description": "e.g. typescript, python, go, rust, shell" },
+        "argParsing": { "type": "string", "description": "e.g. commander, yargs, argparse, click, cobra, clap" },
+        "distribution": { "type": "string", "description": "e.g. npm, pypi, homebrew, prebuilt binaries, docker" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "description": "Preferences for data / analytics projects.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "language": { "type": "string", "description": "e.g. python, sql-first (dbt), r, julia" },
+        "workStyle": { "type": "string", "description": "e.g. notebooks, scripted pipelines, notebooks graduating to pipelines" },
+        "orchestration": { "type": "string", "description": "e.g. cron, airflow, dagster, prefect, none" },
+        "storage": { "type": "string", "description": "e.g. postgres, duckdb, sqlite, parquet, bigquery" },
+        "viz": { "type": "string", "description": "e.g. matplotlib, plotly, streamlit, metabase, grafana" }
+      }
+    },
+    "freeform": {
+      "type": "string",
+      "description": "Anything else agents should honor, in plain English (taste, hard rules, past scars)."
+    }
+  }
+}

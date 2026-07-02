@@ -1,0 +1,6 @@
+node_modules/
+.planforge/
+*.log
+.DS_Store
+stack-preferences.json
+planforge.config.json

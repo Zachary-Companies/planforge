@@ -1,0 +1,15 @@
+{
+  "name": "planforge",
+  "version": "0.1.0",
+  "description": "Idea → plan → shipped software: a guided planner plus a continuous multi-agent build pool with a local web UI.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "bin": { "planforge": "bin/planforge.mjs" },
+  "scripts": {
+    "test": "node --test 'core/**/*.test.mjs' 'planning/**/*.test.mjs' 'ui/**/*.test.mjs'",
+    "ui": "node ui/server.mjs",
+    "start": "node bin/planforge.mjs"
+  },
+  "files": ["bin", "core", "planning", "ui", "docs", "examples", "README.md", "LICENSE"]
+}

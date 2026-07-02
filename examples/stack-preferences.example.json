@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "general": {
+    "languages": ["typescript"],
+    "packageManager": "npm",
+    "license": "MIT",
+    "testing": "vitest",
+    "ci": "github-actions",
+    "codeStyle": "prettier + eslint"
+  },
+  "webApp": {
+    "framework": "react",
+    "meta": "vite",
+    "styling": "plain css",
+    "state": "framework built-ins",
+    "backend": "node + express",
+    "db": "postgres",
+    "orm": "raw sql",
+    "auth": "email + password (own database)",
+    "hosting": "fly.io"
+  },
+  "api": {
+    "language": "typescript",
+    "framework": "express",
+    "apiStyle": "rest",
+    "db": "postgres",
+    "cache": "none needed",
+    "docs": "openapi"
+  },
+  "cli": {
+    "language": "typescript",
+    "argParsing": "commander",
+    "distribution": "npm"
+  },
+  "freeform": "Prefer boring, well-documented technology with small dependency trees. Every repo should have a one-command dev setup (npm install && npm run dev)."
+}
