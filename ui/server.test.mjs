@@ -512,3 +512,28 @@ test('POST /api/runs validates plain-English requests', async () => {
   });
   assert.equal(notArray.status, 400);
 });
+
+test('startServer: explicit port fails loudly on collision; default hunts upward', async () => {
+  const cfgPath = join(ws, 'planforge.config.json');
+  const a = await startServer({ port: 0, configPath: cfgPath });
+  try {
+    await assert.rejects(
+      () => startServer({ port: a.port, configPath: cfgPath }),
+      /already in use[\s\S]*--port/,
+      'explicit port collision must not silently move'
+    );
+    // Default-mode hunting: make sure 4173 is occupied (by us or someone
+    // else), then a default start must still succeed on a nearby port.
+    let blocker = null;
+    try { blocker = await startServer({ port: 4173, configPath: cfgPath }); } catch { /* already busy on this machine — still occupied, which is all we need */ }
+    const hunted = await startServer({ configPath: cfgPath });
+    try {
+      assert.ok(hunted.port > 4173 && hunted.port <= 4193, `hunted past the busy default (got ${hunted.port})`);
+    } finally {
+      await hunted.stop();
+      if (blocker) await blocker.stop();
+    }
+  } finally {
+    await a.stop();
+  }
+});

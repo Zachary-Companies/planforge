@@ -21,7 +21,6 @@ import { agentInvocation } from '../core/providers.mjs';
 import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT } from '../core/platform.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_UI_PORT = 4173;
 
 function usage() {
   console.log(`PlanForge — idea -> plan -> shipped software.
@@ -491,7 +490,7 @@ async function cmdRun(argv) {
 // ---------------------------------------------------------------------------
 
 async function cmdUi(argv) {
-  let port = DEFAULT_UI_PORT;
+  let port = null; // null = let the server use its default and hunt past collisions
   let configArg = null;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--port') port = parseIntFlag(need(argv, ++i, '--port'), '--port', { min: 1 });
@@ -502,13 +501,15 @@ async function cmdUi(argv) {
   const server = join(ROOT, 'ui', 'server.mjs');
   if (!existsSync(server)) throw new Error(`UI server not found: ${server}`);
   // The UI never imports core code: it gets the config path + port via env and
-  // spawns core/orchestrator.mjs itself for runs.
+  // spawns core/orchestrator.mjs itself for runs. PLANFORGE_PORT is only set
+  // when the user chose a port — an explicit port fails hard on collision,
+  // the default hunts upward for a free one.
   const child = spawn('node', [server], {
     stdio: 'inherit',
     env: {
       ...process.env,
       PLANFORGE_CONFIG: config.configPath,
-      PLANFORGE_PORT: String(port),
+      ...(port !== null ? { PLANFORGE_PORT: String(port) } : {}),
     },
   });
   await new Promise((resolveP, rejectP) => {

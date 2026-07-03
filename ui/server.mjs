@@ -1093,14 +1093,25 @@ export function startServer(options = {}) {
   const ctx = loadContext(options.configPath);
   const sseClients = new Set();
   const server = createServer(createRequestHandler(ctx, options, sseClients));
-  const port = options.port ?? (process.env.PLANFORGE_PORT ? Number(process.env.PLANFORGE_PORT) : DEFAULT_PORT);
+  // A port the user chose (option or env) is honored exactly — fail loudly if
+  // it's taken. The DEFAULT port hunts upward instead: 4173 is also Vite's
+  // preview port, so collisions are a normal Tuesday, not an error.
+  const explicit = options.port ?? (process.env.PLANFORGE_PORT ? Number(process.env.PLANFORGE_PORT) : null);
+  const port = explicit ?? DEFAULT_PORT;
+  const hunt = explicit === null || explicit === undefined;
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     return Promise.reject(new Error(`invalid port: ${port}`));
   }
+  const MAX_HUNT = 20;
   return new Promise((resolvePromise, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
+    let candidate = port;
+    // Registered ONCE — a listen() retry must not stack another success
+    // callback (each listen(cb) adds one, and they'd all fire on success).
+    server.once('listening', () => {
       const actual = server.address().port;
+      if (hunt && actual !== DEFAULT_PORT && port !== 0) {
+        console.log(`Port ${DEFAULT_PORT} was busy — using ${actual} instead.`);
+      }
       const stop = () => new Promise((done) => {
         for (const cleanup of [...sseClients]) cleanup();
         server.closeAllConnections();
@@ -1108,6 +1119,21 @@ export function startServer(options = {}) {
       });
       resolvePromise({ server, ctx, port: actual, url: `http://127.0.0.1:${actual}`, stop });
     });
+    const onError = (err) => {
+      if (err.code === 'EADDRINUSE' && hunt && candidate < port + MAX_HUNT) {
+        candidate += 1;
+        server.once('error', onError);
+        server.listen(candidate, '127.0.0.1');
+        return;
+      }
+      if (err.code === 'EADDRINUSE') {
+        reject(new Error(`port ${candidate} is already in use — stop the other server, or pass --port <n> (or PLANFORGE_PORT) to use a different one`));
+        return;
+      }
+      reject(err);
+    };
+    server.once('error', onError);
+    server.listen(candidate, '127.0.0.1');
   });
 }
 
