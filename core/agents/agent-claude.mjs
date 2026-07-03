@@ -33,7 +33,13 @@ const UNAVAILABLE_RE = /currently unavailable|is unavailable|model (is )?not ava
 
 const payload = readStdin();
 const { cmd, args } = claudeCommand();
-const argsFor = (model) => [...args, '-p', '--model', model, '--effort', EFFORT, '--dangerously-skip-permissions'];
+// CLAUDE_CHAIN_STREAM_JSON=1: emit stream-json events so the caller can show
+// live progress and extract the final result (the chain and the plan
+// pipeline both render this).
+const STREAM = process.env.CLAUDE_CHAIN_STREAM_JSON === '1'
+  ? ['--output-format', 'stream-json', '--verbose']
+  : [];
+const argsFor = (model) => [...args, '-p', '--model', model, '--effort', EFFORT, ...STREAM, '--dangerously-skip-permissions'];
 
 const first = await runStreaming(cmd, argsFor(MODEL), { input: payload });
 if (first.code !== 0 && MODEL !== FALLBACK && UNAVAILABLE_RE.test(first.stderr)) {

@@ -919,3 +919,10 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 /* Extra-tasks rows: repo picker, free-text task, compact remove button. */
 .run-setup .req-row { grid-template-columns: 220px 1fr auto; }
 .run-setup .req-row .req-remove { width: 40px; }
+
+/* Forge stage stepper: one row per pipeline stage, live clock on the active one. */
+.forge-stages { margin: 14px 0 10px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.stage-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.stage-row .stage-mark { width: 18px; display: inline-flex; justify-content: center; color: var(--ok, #4caf50); }
+.stage-row.stage-active .stage-name { font-weight: 600; }
+.stage-row .stage-clock { margin-left: auto; font-variant-numeric: tabular-nums; }

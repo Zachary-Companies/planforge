@@ -182,27 +182,6 @@ function planFileName(doc, answers) {
   return `${slug}-build-plan.md`;
 }
 
-// Spawn a provider agent (stdin prompt, workdir arg, exit code) and capture
-// its stdout. stderr streams through for visibility. `argv` is the full
-// cross-platform invocation (e.g. [node, agent-claude.mjs]).
-function runAgent(argv, workdir, prompt, env) {
-  return new Promise((resolveP, rejectP) => {
-    const child = spawn(argv[0], [...argv.slice(1), workdir], { env, stdio: ['pipe', 'pipe', 'inherit'] });
-    let out = '';
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      out += text;
-      process.stdout.write(text);
-    });
-    child.on('error', (err) => rejectP(new Error(`Could not run ${argv.join(' ')}: ${err.message}`)));
-    child.on('close', (code) => {
-      if (code === 0) resolveP(out);
-      else rejectP(new Error(`${argv[0]} exited with code ${code}`));
-    });
-    child.stdin.end(prompt);
-  });
-}
-
 // Cross-platform invocation for an agent path (the PLANFORGE_PLAN_AGENT seam):
 // .mjs runs through this Node, .sh through the POSIX shell, anything else directly.
 function invocationForPath(path) {
@@ -291,8 +270,14 @@ async function cmdPlan(argv) {
   }
 
   // The plan is authored by the claude provider (stdin prompt, workdir arg).
-  // PLANFORGE_PLAN_AGENT overrides the agent path — a test/UI seam.
+  // PLANFORGE_PLAN_AGENT overrides the agent path — a test/UI seam. The
+  // default claude agent runs in stream-json mode so every pipeline stage
+  // shows live progress (session start, tool calls, completion) instead of
+  // minutes of silence; runShellStep renders the events and returns the
+  // final result text.
+  const { runShellStep, shellQuote } = await import('../core/review-chain.mjs');
   let agentArgv;
+  let streamJson = false;
   if (process.env.PLANFORGE_PLAN_AGENT) {
     const seamPath = resolve(process.env.PLANFORGE_PLAN_AGENT);
     if (!existsSync(seamPath)) throw new Error(`PLANFORGE_PLAN_AGENT not found: ${seamPath}`);
@@ -300,13 +285,26 @@ async function cmdPlan(argv) {
   } else {
     agentArgv = agentInvocation('claude');
     if (!agentArgv) throw new Error('The claude agent wrapper is missing (core/agents/agent-claude.mjs).');
+    streamJson = true;
   }
-  const env = {
-    ...process.env,
-    CLAUDE_CHAIN_MODEL: planModel || config.models.claude,
-    CLAUDE_CHAIN_FALLBACK_MODEL: config.models.claudeFallback,
-    CLAUDE_CHAIN_EFFORT: planEffort || config.models.claudeEffort,
-  };
+  process.env.CLAUDE_CHAIN_MODEL = planModel || config.models.claude;
+  process.env.CLAUDE_CHAIN_FALLBACK_MODEL = config.models.claudeFallback;
+  process.env.CLAUDE_CHAIN_EFFORT = planEffort || config.models.claudeEffort;
+  if (streamJson) process.env.CLAUDE_CHAIN_STREAM_JSON = '1';
+  const agentCommand = `${agentArgv.map(shellQuote).join(' ')} ${shellQuote(config.workspace)}`;
+  const logDir = join(config.workspace, '.planforge', 'plan-logs', new Date().toISOString().replace(/[:.]/g, '-'));
+  let stageN = 0;
+  const runPlanAgent = (label, prompt) => runShellStep({
+    label,
+    command: agentCommand,
+    prompt,
+    cwd: config.workspace,
+    logPath: join(logDir, `${String((stageN += 1)).padStart(2, '0')}-${label.replace(/[^a-z0-9-]+/gi, '-').toLowerCase()}.log`),
+    appendPromptAsArg: false,
+    dryRun: false,
+    streamJson,
+    fallback: null,
+  });
   const stage = (name, detail = '') => console.log(`\n@plan-stage ${name}${detail ? ` ${detail}` : ''}`);
 
   // Stage 1 — draft (or revise-in-place).
@@ -319,12 +317,12 @@ async function cmdPlan(argv) {
     if (!existsSync(feedbackPath)) throw new Error(`Feedback file not found: ${feedbackPath}`);
     const currentPlan = readFileSync(revisePath, 'utf8');
     const feedback = readFileSync(feedbackPath, 'utf8');
-    stage('revise', `(model ${env.CLAUDE_CHAIN_MODEL})`);
-    const output = await runAgent(agentArgv, config.workspace, prompts.buildRevisePrompt({ currentPlan, feedback, preferences }), env);
+    stage('revise', `(model ${process.env.CLAUDE_CHAIN_MODEL})`);
+    const output = await runPlanAgent('Revise plan', prompts.buildRevisePrompt({ currentPlan, feedback, preferences }));
     doc = extractPlanDoc(output);
   } else {
-    stage('draft', `(model ${env.CLAUDE_CHAIN_MODEL})`);
-    const output = await runAgent(agentArgv, config.workspace, prompts.buildInterviewPrompt({ answers, preferences }), env);
+    stage('draft', `(model ${process.env.CLAUDE_CHAIN_MODEL})`);
+    const output = await runPlanAgent('Draft plan', prompts.buildInterviewPrompt({ answers, preferences }));
     doc = extractPlanDoc(output);
   }
   if (!doc) throw new Error('The agent returned no plan content.');
@@ -333,7 +331,7 @@ async function cmdPlan(argv) {
   // implementation-ready. (New plans only; revisions keep their depth.)
   if (!revising && deepen) {
     stage('deepen');
-    const output = await runAgent(agentArgv, config.workspace, prompts.buildDeepenPrompt({ currentPlan: doc, preferences }), env);
+    const output = await runPlanAgent('Deepen plan', prompts.buildDeepenPrompt({ currentPlan: doc, preferences }));
     const deepened = extractPlanDoc(output);
     if (deepened) doc = deepened;
     else console.warn('Deepen pass returned no document — keeping the draft.');
@@ -343,8 +341,8 @@ async function cmdPlan(argv) {
   // stopping early once a pass comes back clean.
   for (let pass = 1; pass <= passes; pass += 1) {
     stage(`review-${pass}`, `of ${passes}`);
-    const output = await runAgent(agentArgv, config.workspace,
-      prompts.buildConsistencyReviewPrompt({ currentPlan: doc, preferences, passNumber: pass }), env);
+    const output = await runPlanAgent(`Consistency review ${pass}`,
+      prompts.buildConsistencyReviewPrompt({ currentPlan: doc, preferences, passNumber: pass }));
     if (output.trim().split('\n').pop().trim() === prompts.PLAN_CONSISTENT_MARKER || output.trim() === prompts.PLAN_CONSISTENT_MARKER) {
       console.log(`Review pass ${pass}: consistent — done reviewing.`);
       break;

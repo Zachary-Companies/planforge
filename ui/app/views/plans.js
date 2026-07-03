@@ -3,7 +3,7 @@
 // that streams the plan agent's progress while it forges the document.
 
 import { apiGet, apiText, streamNdjson } from '../api.js';
-import { $, $$, esc, h, relTime, toast } from '../util.js';
+import { $, $$, esc, fmtMs, h, relTime, toast } from '../util.js';
 import { renderMarkdown } from '../md.js';
 import { interviewSteps } from '../questions.js';
 
@@ -309,6 +309,21 @@ function renderWizard(root, ctx) {
     return `<h2>Review your answers</h2><div class="review-list">${items.join('')}</div>`;
   }
 
+  // The pipeline's stages, in order, with human labels. review-N and unknown
+  // future stages are handled dynamically.
+  const STAGE_LABELS = {
+    draft: 'Drafting the plan',
+    revise: 'Revising the plan',
+    deepen: 'Digging into the details',
+    write: 'Writing the plan file',
+    scaffold: 'Setting up the project folder',
+  };
+  const stageLabel = (name) => {
+    const review = name.match(/^review-(\d+)/);
+    if (review) return `Consistency review ${review[1]}`;
+    return STAGE_LABELS[name] || name;
+  };
+
   async function forge() {
     root.innerHTML = `
       <div class="wizard">
@@ -319,17 +334,59 @@ function renderWizard(root, ctx) {
             </svg>
           </div>
           <h2>Forging your plan</h2>
-          <div class="sub">The plan agent is interviewing your answers against your stack preferences.
-          This usually takes a couple of minutes.</div>
+          <div class="sub">The plan goes through several agent passes — draft, a detail pass, then a
+          couple of consistency reviews — so each one takes a few minutes. Leave this open.</div>
+          <div class="forge-stages" id="forge-stages"></div>
           <div class="console" id="forge-console"></div>
         </div>
       </div>`;
     const consoleEl = $('#forge-console', root);
+    const stagesEl = $('#forge-stages', root);
+
+    // Live stage stepper + per-stage elapsed clock: parse @plan-stage markers
+    // from the stream; a ticking timer proves the agent is alive even while
+    // it thinks silently.
+    let activeStage = null;
+    let stageStartedAt = null;
+    const tick = setInterval(() => {
+      const clock = stagesEl.querySelector('.stage-active .stage-clock');
+      if (clock && stageStartedAt) clock.textContent = fmtMs(Date.now() - stageStartedAt);
+    }, 1000);
+    const enterStage = (name) => {
+      if (activeStage) {
+        const prev = stagesEl.querySelector('.stage-active');
+        if (prev) {
+          prev.classList.remove('stage-active');
+          prev.querySelector('.stage-mark').textContent = '✔';
+        }
+      }
+      activeStage = name;
+      stageStartedAt = Date.now();
+      stagesEl.appendChild(h(`<div class="stage-row stage-active">
+        <span class="stage-mark"><span class="spinner"></span></span>
+        <span class="stage-name">${esc(stageLabel(name))}</span>
+        <span class="stage-clock dim">0s</span>
+      </div>`));
+    };
+    const finishStages = (ok) => {
+      clearInterval(tick);
+      const prev = stagesEl.querySelector('.stage-active');
+      if (prev) {
+        prev.classList.remove('stage-active');
+        prev.querySelector('.stage-mark').textContent = ok ? '✔' : '✖';
+      }
+    };
+
     try {
       const last = await streamNdjson('/api/plans', { answers }, (e) => {
-        if (e.type === 'progress') appendConsoleLine(consoleEl, e.line, e.stream === 'stderr');
+        if (e.type === 'progress') {
+          const stage = e.line.match(/^@plan-stage\s+(\S+)/);
+          if (stage) { enterStage(stage[1]); return; }
+          appendConsoleLine(consoleEl, e.line, e.stream === 'stderr');
+        }
         if (e.type === 'start') appendConsoleLine(consoleEl, `$ ${e.cmd}`);
       });
+      finishStages(last?.type === 'done' && last.ok);
       if (destroyed) return;
       if (last?.type === 'done' && last.ok) {
         toast('Plan forged');
@@ -338,6 +395,7 @@ function renderWizard(root, ctx) {
         failBack(last?.message || 'The plan agent did not finish cleanly.');
       }
     } catch (err) {
+      finishStages(false);
       if (!destroyed) failBack(err.message);
     }
 
