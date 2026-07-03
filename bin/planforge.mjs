@@ -8,6 +8,8 @@
 //   planforge run [options]             run the continuous build pool
 //   planforge ui [--port N]             start the local web UI
 //   planforge doctor [--json]           check tools, agents, and config health
+//   planforge projects [--json]         list projects + available actions
+//   planforge start|build|publish [p]   run / build / publish a project
 //
 // The CLI is a thin shell: config loading lives in core/config.mjs, the pool in
 // core/orchestrator.mjs, prompts in planning/prompts.mjs, and the web UI in
@@ -18,7 +20,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, CONFIG_FILENAME, CONFIG_DEFAULTS } from '../core/config.mjs';
 import { agentInvocation } from '../core/providers.mjs';
-import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT } from '../core/platform.mjs';
+import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT, shellInvocation } from '../core/platform.mjs';
+import { detectProjectActions, listProjects, localDirForRepo } from '../core/project.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -67,6 +70,15 @@ Usage:
 
   planforge ui [--port <n>] [--config <path>]
       Start the local web UI (dashboard, plan wizard, preferences form).
+
+  planforge projects [--json]
+      List the scaffolded projects and the actions available on each.
+
+  planforge start | build | publish [<project>] [--config <path>]
+      Run / build / publish a project, using commands detected from its
+      package.json scripts and deploy config (firebase.json, vercel.json,
+      netlify.toml). Override in planforge.config.json under "projects".
+      The project name is optional when there is only one.
 
 Config is found by walking up from the current directory (or use --config).`);
 }
@@ -600,6 +612,68 @@ async function cmdDoctor(argv) {
   if (!report.ok) process.exitCode = 1;
 }
 
+// ---------------------------------------------------------------------------
+// planforge projects | start | build | publish — act on a scaffolded project
+// ---------------------------------------------------------------------------
+
+function resolveProject(nameArg, config) {
+  const projects = listProjects({ repos: config.repos, workspace: config.workspace, projectsConfig: config.projects });
+  if (nameArg) {
+    const dir = localDirForRepo(nameArg, config.workspace);
+    const overrides = config.projects[nameArg] || config.projects[basename(dir)] || {};
+    return detectProjectActions(dir, overrides);
+  }
+  const existing = projects.filter((p) => p.exists);
+  if (existing.length === 1) return existing[0];
+  if (existing.length === 0) throw new Error('No project folders found in the workspace yet — create a plan (it scaffolds one), or add repos to planforge.config.json.');
+  throw new Error(`Which project? Pass a name: ${existing.map((p) => p.name).join(', ')}`);
+}
+
+async function cmdProjects(argv) {
+  let configArg = null;
+  let asJson = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
+    else if (argv[i] === '--json') asJson = true;
+    else throw new Error(`Unknown option for projects: ${argv[i]}`);
+  }
+  const config = loadConfig(configArg || process.cwd());
+  const projects = listProjects({ repos: config.repos, workspace: config.workspace, projectsConfig: config.projects });
+  if (asJson) { console.log(JSON.stringify({ projects }, null, 2)); return; }
+  if (projects.length === 0) { console.log('No projects yet. Create a plan (it scaffolds a project folder) or add repos to planforge.config.json.'); return; }
+  for (const p of projects) {
+    console.log(`\n${p.name}${p.repo ? `  (${p.repo})` : ''}${p.exists ? '' : '  — not checked out locally yet'}`);
+    if (!p.exists) continue;
+    for (const a of p.actions) {
+      console.log(a.available ? `  ${a.id.padEnd(8)} ${a.command}` : `  ${a.id.padEnd(8)} (unavailable) ${a.reason}`);
+    }
+  }
+}
+
+async function cmdProjectAction(action, argv) {
+  let configArg = null;
+  let nameArg = null;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
+    else if (!argv[i].startsWith('--')) nameArg = argv[i];
+    else throw new Error(`Unknown option for ${action}: ${argv[i]}`);
+  }
+  const config = loadConfig(configArg || process.cwd());
+  const project = resolveProject(nameArg, config);
+  if (!project.exists) throw new Error(`Project folder not found: ${project.dir}`);
+  const act = project.actions.find((a) => a.id === action);
+  if (!act) throw new Error(`Unknown action: ${action}`);
+  if (!act.available) throw new Error(`Cannot ${action} ${project.name}: ${act.reason}`);
+
+  console.log(`${project.name}: ${act.command}\n`);
+  const [shellBin, shellArgs] = shellInvocation(act.command);
+  const child = spawn(shellBin, shellArgs, { cwd: project.dir, stdio: 'inherit', env: process.env });
+  await new Promise((resolveP, rejectP) => {
+    child.on('error', (err) => rejectP(new Error(`Could not run ${action}: ${err.message}`)));
+    child.on('close', (code) => (code === 0 ? resolveP() : rejectP(new Error(`${action} exited with code ${code}`))));
+  });
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command || command === '--help' || command === '-h' || command === 'help') {
@@ -611,7 +685,9 @@ async function main() {
   if (command === 'run') return cmdRun(rest);
   if (command === 'ui') return cmdUi(rest);
   if (command === 'doctor') return cmdDoctor(rest);
-  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor)`);
+  if (command === 'projects') return cmdProjects(rest);
+  if (command === 'start' || command === 'build' || command === 'publish') return cmdProjectAction(command, rest);
+  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish)`);
 }
 
 // npm installs the bin as a symlink, so compare the realpath too.

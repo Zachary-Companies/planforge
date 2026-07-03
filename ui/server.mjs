@@ -16,6 +16,10 @@
 //   POST /api/runs                spawn `planforge run …` detached, return run id
 //   GET  /api/runs/:id/events     SSE: replay events.ndjson from byte 0, then tail
 //   POST /api/runs/:id/stop       SIGTERM the recorded pid
+//   GET  /api/projects            scaffolded projects + detected/available actions
+//   POST /api/projects/:n/action  start|build|publish (spawns the CLI detached)
+//   GET  /api/projects/:n/log/:id SSE tail of an action's log (ends on @exit)
+//   POST /api/projects/:n/stop    kill the running action's process group
 //
 // Security: binds 127.0.0.1 only, rejects path traversal. No auth (local tool).
 //
@@ -30,8 +34,8 @@
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import {
-  closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
-  readSync, renameSync, rmSync, statSync, watch, writeFileSync,
+  appendFileSync, closeSync, createWriteStream, existsSync, mkdirSync, openSync,
+  readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, watch, writeFileSync,
 } from 'node:fs';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -808,6 +812,143 @@ function stopRun(res, ctx, id) {
   json(res, 200, { ok: killed, pid: pids.pid });
 }
 
+// ---------------------------------------------------------------------------
+// Projects — start / build / publish a scaffolded project. Detection + the
+// actual commands live in the CLI (`planforge projects|start|build|publish`);
+// the server spawns it detached, tees output to a log, and tracks the process
+// group so a long-running dev server can be tailed and stopped. Keeps the UI
+// decoupled from core, same as the doctor + run endpoints.
+// ---------------------------------------------------------------------------
+
+const PROJECT_ACTIONS = new Set(['start', 'build', 'publish']);
+const projectRoot = (ctx, name) => join(ctx.workspace, '.planforge', 'projects', name);
+
+function readProjectState(ctx, name) {
+  try {
+    const s = JSON.parse(readFileSync(join(projectRoot(ctx, name), 'current.json'), 'utf8'));
+    return { ...s, alive: pidAlive(s.pid) };
+  } catch { return null; }
+}
+
+// GET /api/projects — detection via the CLI, augmented with live action state.
+function listProjectsEndpoint(res, ctx) {
+  const cmd = resolveCliCommand('PLANFORGE_PROJECT_CMD');
+  if (!cmd) { json(res, 501, { error: 'planforge CLI not found' }); return; }
+  const args = [...cmd.argv.slice(1), 'projects', '--json'];
+  if (ctx.configPath) args.push('--config', ctx.configPath);
+  execFile(cmd.argv[0], args, { cwd: ctx.workspace, timeout: 30000 }, (err, stdout) => {
+    let parsed;
+    try { parsed = JSON.parse(stdout); } catch { json(res, 502, { error: `could not list projects: ${err ? err.message : 'bad output'}` }); return; }
+    const projects = (parsed.projects || []).map((p) => {
+      const st = readProjectState(ctx, p.name);
+      return { ...p, running: st && st.alive ? { action: st.action, logId: st.logId, longRunning: st.longRunning, startedAt: st.startedAt } : null };
+    });
+    json(res, 200, { projects });
+  });
+}
+
+// POST /api/projects/:name/action { action } — spawn the CLI action detached.
+function startProjectAction(res, ctx, name, body) {
+  const action = body?.action;
+  if (!PROJECT_ACTIONS.has(action)) { json(res, 400, { error: `action must be one of: ${[...PROJECT_ACTIONS].join(', ')}` }); return; }
+  const existing = readProjectState(ctx, name);
+  if (existing && existing.alive) { json(res, 409, { error: `${name} already has a "${existing.action}" running — stop it first`, running: { action: existing.action, logId: existing.logId } }); return; }
+  const cmd = resolveCliCommand('PLANFORGE_PROJECT_CMD');
+  if (!cmd) { json(res, 501, { error: 'planforge CLI not found' }); return; }
+
+  const dir = projectRoot(ctx, name);
+  mkdirSync(dir, { recursive: true });
+  const logId = `${action}-${Date.now().toString(36)}`;
+  const logFile = join(dir, `${logId}.log`);
+  const args = [...cmd.argv.slice(1), action, name];
+  if (ctx.configPath) args.push('--config', ctx.configPath);
+
+  const out = createWriteStream(logFile, { flags: 'w' });
+  let child;
+  try {
+    // Own process group (detached) so a Stop can kill the whole tree (the CLI,
+    // its shell, and the dev server/build it launched).
+    child = spawn(cmd.argv[0], args, { cwd: ctx.workspace, env: { ...process.env }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) { json(res, 500, { error: `failed to start ${action}: ${err.message}` }); return; }
+  child.stdout.on('data', (d) => out.write(d));
+  child.stderr.on('data', (d) => out.write(d));
+
+  const longRunning = action === 'start';
+  const state = { pid: child.pid, action, logId, longRunning, startedAt: Date.now() };
+  try { writeFileSync(join(dir, 'current.json'), `${JSON.stringify(state, null, 2)}\n`); } catch { /* best effort */ }
+
+  child.on('close', (code, signal) => {
+    try { out.end(); } catch { /* ignore */ }
+    try { appendFileSync(logFile, `\n@exit ${code === null ? `signal:${signal}` : code}\n`); } catch { /* ignore */ }
+    // Clear the live marker but leave the log for the final tail.
+    try {
+      const cur = readProjectState(ctx, name);
+      if (cur && cur.logId === logId) rmSync(join(dir, 'current.json'), { force: true });
+    } catch { /* ignore */ }
+  });
+  child.unref();
+  json(res, 200, { ok: true, action, logId, longRunning });
+}
+
+// POST /api/projects/:name/stop — kill the running action's process group.
+function stopProjectAction(res, ctx, name) {
+  const st = readProjectState(ctx, name);
+  if (!st) { json(res, 409, { error: `nothing running for ${name}` }); return; }
+  if (!st.alive) { rmSync(join(projectRoot(ctx, name), 'current.json'), { force: true }); json(res, 409, { error: 'process already exited' }); return; }
+  let killed = false;
+  try { process.kill(-st.pid, 'SIGTERM'); killed = true; } catch { /* no group */ }
+  if (!killed) { try { process.kill(st.pid, 'SIGTERM'); killed = true; } catch { /* raced */ } }
+  json(res, 200, { ok: killed, pid: st.pid, action: st.action });
+}
+
+// GET /api/projects/:name/log/:logId — SSE tail of a project action log.
+// Replays from byte 0, tails new lines, and ends after the "@exit" marker.
+function sseProjectLog(req, res, ctx, name, logId, sseClients) {
+  const file = join(projectRoot(ctx, name), `${logId}.log`);
+  if (!existsSync(file)) { json(res, 404, { error: 'unknown log' }); return; }
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' });
+  res.write('retry: 2000\n\n');
+  let offset = 0;
+  let partial = '';
+  let done = false;
+  const emit = (line) => { try { res.write(`data: ${JSON.stringify({ line })}\n\n`); } catch { /* gone */ } };
+  const finish = () => { if (done) return; done = true; try { res.write('event: done\ndata: {}\n\n'); } catch { /* gone */ } cleanup(); try { res.end(); } catch { /* ignore */ } };
+  const pump = () => {
+    let st; try { st = statSync(file); } catch { return; }
+    if (st.size < offset) { offset = 0; partial = ''; }
+    if (st.size === offset) return;
+    let fd;
+    try {
+      fd = openSync(file, 'r');
+      const len = st.size - offset;
+      const buf = Buffer.alloc(len);
+      const read = readSync(fd, buf, 0, len, offset);
+      offset += read;
+      partial += buf.toString('utf8', 0, read);
+    } catch { return; } finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* ignore */ } } }
+    const lines = partial.split('\n');
+    partial = lines.pop();
+    for (const line of lines) {
+      const m = line.match(/^@exit\s+(.+)$/);
+      if (m) { emit(line); finish(); return; }
+      emit(line);
+    }
+  };
+  pump();
+  const dir = projectRoot(ctx, name);
+  let watcher = null;
+  try { watcher = watch(dir, pump); } catch { /* polling covers it */ }
+  const poll = setInterval(pump, 500);
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* gone */ } }, 15_000);
+  function cleanup() {
+    clearInterval(poll); clearInterval(ping);
+    if (watcher) { try { watcher.close(); } catch { /* ignore */ } watcher = null; }
+    sseClients.delete(cleanup);
+  }
+  sseClients.add(cleanup);
+  req.on('close', cleanup);
+}
+
 /**
  * SSE tail of <runDir>/events.ndjson: replay from byte 0, then keep pushing
  * complete lines as they are appended. fs.watch on the run dir gives low
@@ -1073,6 +1214,29 @@ export function createRequestHandler(ctx, options, sseClients) {
       const id = decodeURIComponent(m[1]);
       if (!safeName(id)) { json(res, 400, { error: 'invalid run id' }); return; }
       stopRun(res, ctx, id);
+    }],
+
+    ['GET', /^\/api\/projects$/, (req, res) => listProjectsEndpoint(res, ctx)],
+
+    ['POST', /^\/api\/projects\/([^/]+)\/action$/, async (req, res, m) => {
+      const name = decodeURIComponent(m[1]);
+      if (!safeName(name)) { json(res, 400, { error: 'invalid project name' }); return; }
+      const body = await readJsonBody(req, res);
+      if (body === undefined) return;
+      startProjectAction(res, ctx, name, body);
+    }],
+
+    ['POST', /^\/api\/projects\/([^/]+)\/stop$/, (req, res, m) => {
+      const name = decodeURIComponent(m[1]);
+      if (!safeName(name)) { json(res, 400, { error: 'invalid project name' }); return; }
+      stopProjectAction(res, ctx, name);
+    }],
+
+    ['GET', /^\/api\/projects\/([^/]+)\/log\/([^/]+)$/, (req, res, m) => {
+      const name = decodeURIComponent(m[1]);
+      const logId = decodeURIComponent(m[2]);
+      if (!safeName(name) || !safeName(logId)) { json(res, 400, { error: 'invalid project or log id' }); return; }
+      sseProjectLog(req, res, ctx, name, logId, sseClients);
     }],
   ];
 

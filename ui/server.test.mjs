@@ -569,3 +569,80 @@ console.log('@plan-slug survivor');
     delete process.env.PLANFORGE_PLAN_CMD;
   }
 });
+
+// ---------------------------------------------------------- projects endpoints
+const PROJECT_STUB = `
+const sub = process.argv[2];
+if (sub === 'projects') {
+  console.log(JSON.stringify({ projects: [{
+    name: 'demo', repo: 'acme/demo', exists: true, kind: 'node', packageManager: 'npm', needsInstall: false,
+    actions: [
+      { id: 'start', label: 'Start', command: 'npm run dev', longRunning: true, available: true },
+      { id: 'build', label: 'Build', command: 'npm run build', longRunning: false, available: true },
+      { id: 'publish', label: 'Publish', command: null, longRunning: false, available: false, reason: 'no deploy target' },
+    ],
+  }] }));
+  process.exit(0);
+}
+console.log('ACTION ' + sub + ' running');
+console.log('serving at http://localhost:5999');
+setTimeout(() => process.exit(0), 120);
+`;
+
+async function readSse(url, { maxMs = 4000 } = {}) {
+  const res = await fetch(url);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let text = '';
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += dec.decode(value, { stream: true });
+    if (text.includes('event: done')) break;
+  }
+  try { await reader.cancel(); } catch { /* ignore */ }
+  return text;
+}
+
+test('GET /api/projects lists projects via the CLI stub', async () => {
+  writeFileSync(join(ws, 'stub-project-cmd.mjs'), PROJECT_STUB);
+  process.env.PLANFORGE_PROJECT_CMD = `"${process.execPath}" "${join(ws, 'stub-project-cmd.mjs')}"`;
+  try {
+    const res = await fetch(`${base}/api/projects`);
+    assert.equal(res.status, 200);
+    const { projects } = await res.json();
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0].name, 'demo');
+    assert.equal(projects[0].running, null);
+    assert.equal(projects[0].actions.find((a) => a.id === 'start').available, true);
+  } finally {
+    delete process.env.PLANFORGE_PROJECT_CMD;
+  }
+});
+
+test('POST /api/projects/:name/action runs an action and the log streams to @exit', async () => {
+  writeFileSync(join(ws, 'stub-project-cmd.mjs'), PROJECT_STUB);
+  process.env.PLANFORGE_PROJECT_CMD = `"${process.execPath}" "${join(ws, 'stub-project-cmd.mjs')}"`;
+  try {
+    const started = await fetch(`${base}/api/projects/demo/action`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'build' }),
+    });
+    assert.equal(started.status, 200);
+    const { logId, ok } = await started.json();
+    assert.equal(ok, true);
+    assert.ok(logId);
+    const sse = await readSse(`${base}/api/projects/demo/log/${encodeURIComponent(logId)}`);
+    assert.match(sse, /ACTION build running/);
+    assert.match(sse, /http:\/\/localhost:5999/);
+    assert.match(sse, /@exit 0/);
+    assert.match(sse, /event: done/);
+
+    const bad = await fetch(`${base}/api/projects/demo/action`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'nope' }),
+    });
+    assert.equal(bad.status, 400);
+  } finally {
+    delete process.env.PLANFORGE_PROJECT_CMD;
+  }
+});

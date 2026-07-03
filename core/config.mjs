@@ -75,6 +75,26 @@ function stringField(configPath, raw, key) {
   return raw;
 }
 
+// Optional per-project command overrides:
+//   "projects": { "<repo-or-name>": { "start": "...", "build": "...", "publish": "..." } }
+// An empty string hides that action. Anything else is auto-detected.
+function projectsField(configPath, raw) {
+  if (raw === undefined) return {};
+  assertPlainObject(configPath, raw, '"projects"');
+  const out = {};
+  for (const [key, val] of Object.entries(raw)) {
+    assertPlainObject(configPath, val, `"projects.${key}"`);
+    const entry = {};
+    for (const action of ['start', 'build', 'publish']) {
+      if (val[action] === undefined) continue;
+      if (typeof val[action] !== 'string') fail(configPath, `"projects.${key}.${action}" must be a string command (or "" to hide it)`);
+      entry[action] = val[action];
+    }
+    out[key] = entry;
+  }
+  return out;
+}
+
 function reposField(configPath, raw) {
   if (raw === undefined) return [...CONFIG_DEFAULTS.repos];
   if (!Array.isArray(raw)) fail(configPath, `"repos" must be an array of "owner/repo" strings`);
@@ -206,5 +226,6 @@ export function loadConfig(pathOrDir = process.cwd()) {
     maxSlices,
     providers: providersField(configPath, parsed.providers),
     models: modelsField(configPath, parsed.models),
+    projects: projectsField(configPath, parsed.projects),
   };
 }

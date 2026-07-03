@@ -30,6 +30,15 @@ It has three parts, all driven from a local web UI:
    hygiene runs after every merge — no abandoned branches, no force-readied
    drafts, no unreviewed merges.
 
+4. **Run, build, and ship it.** When the pool has built your app, the
+   **Projects** tab gives you **Start / Build / Publish** buttons. PlanForge
+   reads the commands straight from your project — its `package.json` scripts
+   and deploy config (`firebase.json`, `vercel.json`, `netlify.toml`) — so
+   Start runs the dev server (with a clickable link when it detects one) and
+   Publish deploys to the host it finds. Same from the terminal:
+   `planforge start`, `planforge build`, `planforge publish`. Override any
+   command in `planforge.config.json` under `"projects"`.
+
 ## Quick start
 
 ```bash

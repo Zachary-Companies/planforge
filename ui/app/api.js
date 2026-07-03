@@ -93,3 +93,21 @@ export function openRunEvents(runId, onEvent, onStateChange) {
   };
   return { close: () => { try { es.close(); } catch { /* already closed */ } } };
 }
+
+/**
+ * Subscribe to a project action's log stream (SSE). Each message is { line };
+ * the server sends an `event: done` frame after the action's @exit marker.
+ * Returns { close }.
+ */
+export function openProjectLog(name, logId, onLine, onDone, onStateChange) {
+  const es = new EventSource(`/api/projects/${encodeURIComponent(name)}/log/${encodeURIComponent(logId)}`);
+  es.onopen = () => onStateChange?.(true);
+  es.onerror = () => onStateChange?.(false);
+  es.onmessage = (msg) => {
+    let obj;
+    try { obj = JSON.parse(msg.data); } catch { return; }
+    if (typeof obj.line === 'string') { try { onLine(obj.line); } catch { /* keep stream alive */ } }
+  };
+  es.addEventListener('done', () => { try { onDone?.(); } finally { try { es.close(); } catch { /* closed */ } } });
+  return { close: () => { try { es.close(); } catch { /* already closed */ } } };
+}

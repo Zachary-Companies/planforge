@@ -5,6 +5,7 @@ import { $, $$, esc } from './util.js';
 import { renderPreferences } from './views/preferences.js';
 import { renderPlans } from './views/plans.js';
 import { renderRuns } from './views/runs.js';
+import { renderProjects } from './views/projects.js';
 
 const ctx = { config: null };
 
@@ -15,6 +16,7 @@ const ROUTES = [
   { re: /^#\/plans$/, nav: 'plans', view: (m, el) => renderPlans(el, ctx, { mode: 'list' }) },
   { re: /^#\/runs\/([^/]+)$/, nav: 'runs', view: (m, el) => renderRuns(el, ctx, { mode: 'live', id: decodeURIComponent(m[1]) }) },
   { re: /^#\/runs$/, nav: 'runs', view: (m, el) => renderRuns(el, ctx, { mode: 'list' }) },
+  { re: /^#\/projects$/, nav: 'projects', view: (m, el) => renderProjects(el, ctx) },
 ];
 
 let cleanup = null;
