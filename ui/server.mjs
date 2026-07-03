@@ -519,19 +519,36 @@ function streamPlanCommand(req, res, ctx, args, { knownSlug = null } = {}) {
     send({ type: 'progress', stream: 'stderr', line });
   });
 
-  const timeout = setTimeout(() => { try { child.kill('SIGTERM'); } catch { /* gone */ } }, 15 * 60 * 1000);
+  // The pipeline is several agent passes at minutes each — the ceiling is a
+  // hung-process backstop, not a pace-setter. PLANFORGE_PLAN_TIMEOUT_MS overrides.
+  const PLAN_TIMEOUT_MS = Number(process.env.PLANFORGE_PLAN_TIMEOUT_MS) || 90 * 60 * 1000;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    try { child.kill('SIGTERM'); } catch { /* gone */ }
+  }, PLAN_TIMEOUT_MS);
   child.on('error', (err) => {
     clearTimeout(timeout);
     send({ type: 'error', ok: false, message: `plan command failed to start: ${err.message}` });
     res.end();
   });
-  child.on('close', (code) => {
+  child.on('close', (code, signal) => {
     clearTimeout(timeout);
     if (code === 0) {
       const slug = knownSlug ?? markerSlug ?? detectNewPlan(ctx, before);
       send({
         type: 'done', ok: true, code: 0, slug: slug ?? null,
         ...(slug ? {} : { note: 'plan command succeeded but no new *-build-plan.md was detected' }),
+      });
+    } else if (timedOut) {
+      send({
+        type: 'error', ok: false, code,
+        message: `plan generation hit the ${Math.round(PLAN_TIMEOUT_MS / 60000)}-minute safety ceiling and was stopped. If it was genuinely still working, raise PLANFORGE_PLAN_TIMEOUT_MS.`,
+      });
+    } else if (code === null) {
+      send({
+        type: 'error', ok: false, code,
+        message: `the plan process was stopped by a ${signal || 'signal'} before finishing — usually the UI server restarted or the machine slept. Your answers are kept below; forge again.`,
       });
     } else {
       send({
@@ -541,8 +558,13 @@ function streamPlanCommand(req, res, ctx, args, { knownSlug = null } = {}) {
     }
     res.end();
   });
+  // A dropped browser connection must NOT kill the plan — the work is minutes
+  // of agent time. Let it finish and write the plan; it shows up in the Plans
+  // list, and the send() wrapper is already a no-op once the client is gone.
   req.on('close', () => {
-    if (child.exitCode === null && !child.killed) { try { child.kill('SIGTERM'); } catch { /* gone */ } }
+    if (child.exitCode === null && !child.killed) {
+      console.log('plan client disconnected — letting the plan agent finish in the background');
+    }
   });
 }
 

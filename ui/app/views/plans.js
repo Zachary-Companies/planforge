@@ -182,10 +182,27 @@ function readWizardField(field) {
   return v || undefined;
 }
 
+// Wizard answers survive reloads/server restarts via localStorage — people
+// invest real thought in these; losing them to a refresh is unacceptable.
+const WIZARD_DRAFT_KEY = 'planforge-wizard-draft';
+function loadWizardDraft() {
+  try {
+    const raw = localStorage.getItem(WIZARD_DRAFT_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+function saveWizardDraft(answers) {
+  try { localStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify(answers)); } catch { /* private mode */ }
+}
+function clearWizardDraft() {
+  try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch { /* private mode */ }
+}
+
 function renderWizard(root, ctx) {
   root.innerHTML = '<div class="loading-row"><span class="spinner"></span>loading interview…</div>';
   let destroyed = false;
-  const answers = {};
+  const answers = loadWizardDraft(); // restore a draft lost to reload/restart
   let stepIndex = 0;
   let steps = [];
   root.addEventListener('click', onOptClick); // delegated once; survives repaints
@@ -218,6 +235,7 @@ function renderWizard(root, ctx) {
       if (v === undefined) delete answers[field.dataset.qid];
       else answers[field.dataset.qid] = v;
     }
+    saveWizardDraft(answers);
   }
 
   function validateStep() {
@@ -389,6 +407,7 @@ function renderWizard(root, ctx) {
       finishStages(last?.type === 'done' && last.ok);
       if (destroyed) return;
       if (last?.type === 'done' && last.ok) {
+        clearWizardDraft();
         toast('Plan forged');
         window.location.hash = last.slug ? `#/plans/${encodeURIComponent(last.slug)}` : '#/plans';
       } else {

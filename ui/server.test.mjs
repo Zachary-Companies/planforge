@@ -537,3 +537,35 @@ test('startServer: explicit port fails loudly on collision; default hunts upward
     await a.stop();
   }
 });
+
+test('a dropped client connection does not kill an in-flight plan', async () => {
+  const SLOW_STUB = `
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+const wsDir = process.argv.find((a, i) => process.argv[i - 1] === '--config')?.replace(/planforge\\.config\\.json$/, '') ?? process.cwd();
+console.log('working...');
+await new Promise((r) => setTimeout(r, 700));
+mkdirSync(join(wsDir, 'plans'), { recursive: true });
+writeFileSync(join(wsDir, 'plans', 'survivor-build-plan.md'), '# Survivor build plan\\n<!-- slug: survivor -->\\n\\n## 1. Overview\\n\\nStill here.\\n');
+console.log('@plan-slug survivor');
+`;
+  writeFileSync(join(ws, 'stub-slow-plan.mjs'), SLOW_STUB);
+  process.env.PLANFORGE_PLAN_CMD = `"${process.execPath}" "${join(ws, 'stub-slow-plan.mjs')}"`;
+  try {
+    const ac = new AbortController();
+    const req = fetch(`${base}/api/plans`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: { idea: 'survives disconnects' } }),
+      signal: ac.signal,
+    });
+    await new Promise((r) => setTimeout(r, 250)); // stream started, plan not written yet
+    ac.abort();
+    await req.catch(() => {}); // the abort error is the point
+    assert.equal(existsSync(join(ws, 'plans', 'survivor-build-plan.md')), false, 'not written yet at abort time');
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(existsSync(join(ws, 'plans', 'survivor-build-plan.md')), true, 'plan finished after the client left');
+  } finally {
+    delete process.env.PLANFORGE_PLAN_CMD;
+  }
+});
