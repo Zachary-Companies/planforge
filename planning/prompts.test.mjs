@@ -364,3 +364,25 @@ test("buildConsistencyReviewPrompt defaults a bad passNumber to 1", () => {
   const prompt = buildConsistencyReviewPrompt({ currentPlan: "x", passNumber: -3 });
   assert.ok(prompt.includes("consistency pass 1"));
 });
+
+// ---- resources: plans must derive backing services (esp. storage) from features ----
+import { PLAN_FORMAT_SPEC as SPEC2 } from "./prompts.mjs";
+
+test("the plan format requires a Resources enumeration with the uploads→storage rule", () => {
+  assert.match(SPEC2, /\*\*Resources\*\*/);
+  assert.match(SPEC2, /OBJECT\/FILE STORAGE/);
+  assert.match(SPEC2, /not a database column/i);
+});
+
+test("the interview prompt tells the agent to provision resources it derives", () => {
+  const p = buildInterviewPrompt({ answers: { idea: "upload photos and audio" }, preferences: null });
+  assert.match(p, /Resources/);
+  assert.match(p, /storage/i);
+});
+
+test("the consistency review checks resource completeness for upload features", () => {
+  const p = buildConsistencyReviewPrompt({ currentPlan: "x", passNumber: 1 });
+  assert.match(p, /Resource completeness/i);
+  assert.match(p, /upload.*(photo|audio|video|file)/i);
+  assert.match(p, /object\/file storage/i);
+});

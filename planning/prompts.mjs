@@ -70,6 +70,14 @@ build stands; the ledger (§5) remains authoritative.
   (Accepted, with a one-line rationale). Never deviate silently. If no
   preferences were set, choose boring, mainstream defaults and record each
   notable choice as an Accepted decision.
+- **Resources** — a list of every backing service the app needs to run,
+  derived from its features. Read each feature and name what it requires:
+  uploading or storing photos/audio/video/files needs OBJECT/FILE STORAGE
+  (a blob store, not a database column); saved records need a DATABASE;
+  sign-in needs AUTH; sessions/queues/rate-limits often need a CACHE;
+  live updates need realtime/pub-sub. List each resource, why it is needed,
+  and which provider provides it. Missing a resource here (e.g. storage for
+  an upload feature) is a plan defect.
 - **Contracts** — how the parts talk to each other (routes, file formats,
   schemas) in just enough detail that two slices touching either side agree.
 
@@ -518,7 +526,13 @@ export function buildConsistencyReviewPrompt({ currentPlan, preferences, passNum
       "decision recording the deviation.",
     "7. Acceptance criteria: present on every slice, mechanically checkable, " +
       "and consistent with the slice's paths.",
-    "8. Ledger: well-formed rows, chronological, append-only shape.",
+    "8. Resource completeness: §2's Resources list covers EVERY backing " +
+      "service the features imply, and each is provisioned by a slice. Check " +
+      "each feature: any upload/store of a photo, audio, video, or file " +
+      "REQUIRES object/file storage — a plan that stores files without a " +
+      "storage resource is wrong; add it (and its setup slice). Likewise " +
+      "sign-in→auth, saved data→database, live updates→realtime.",
+    "9. Ledger: well-formed rows, chronological, append-only shape.",
     "",
     "## Output — exactly one of two forms",
     "",

@@ -41,6 +41,15 @@ plain CSS (`webApp.styling`), Node + Express (`webApp.backend`), raw SQL
 **Deviation:** preferences name PostgreSQL (`webApp.db`); this plan uses
 SQLite — recorded as **D1** (Accepted).
 
+Resources (backing services this app needs to run):
+- **Database** — SQLite file `server/data/todo.db` holds users, lists, todos,
+  and invites. Provisioned by the migrations that run at server start.
+- **No object storage** — this app stores only text; there are no photo, audio,
+  video, or file uploads, so no blob store is needed. (An app with uploads
+  would list object storage here.)
+- **No cache / queue / auth service** — sessions are signed cookies verified in
+  the API; nothing else is required for v1.
+
 Contracts:
 - REST JSON under `/api/*`; auth is an httpOnly session cookie; the Vite dev
   server (port 5173) proxies `/api` to the Express server (port 3001).
