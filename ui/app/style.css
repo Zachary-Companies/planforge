@@ -928,7 +928,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 .stage-row .stage-clock { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 /* Projects view: cards with action buttons + a live action log. */
-.project-card { margin-bottom: 16px; }
+.project-card { padding: 18px 20px; margin-bottom: 16px; }
 .project-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .project-head h2 { margin: 0 0 3px; font-size: 15px; }
 .project-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
