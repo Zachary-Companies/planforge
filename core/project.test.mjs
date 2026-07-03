@@ -136,3 +136,43 @@ test('a scaffold-only checkout behind its remote is syncable with a helpful hint
   assert.equal(r.syncable, true);
   assert.match(r.hint, /behind the remote/);
 });
+
+// ---- resource provisioning: detect backing services + a setup command ----
+test('firebase.json yields a provision action that sets up firestore + storage', () => {
+  const dir = proj({
+    'package.json': JSON.stringify({ scripts: { dev: 'vite', build: 'vite build' } }),
+    'node_modules/.keep': '',
+    'firebase.json': JSON.stringify({ firestore: { rules: 'firestore.rules' }, storage: { rules: 'storage.rules' }, hosting: {} }),
+  });
+  const r = detectProjectActions(dir);
+  assert.deepEqual(r.resources.map((x) => x.name).sort(), ['Cloud Storage', 'Firestore']);
+  const a = actionsById(r);
+  assert.equal(a.provision.available, true);
+  assert.match(a.provision.command, /firebase-tools deploy --only firestore,storage/);
+  assert.equal(a.provision.confirm, true);
+});
+
+test('docker-compose + prisma provision brings up services then migrates, in order', () => {
+  const dir = proj({
+    'package.json': JSON.stringify({ scripts: { dev: 'next dev', build: 'next build' } }),
+    'node_modules/.keep': '',
+    'docker-compose.yml': 'services:\n  db:\n    image: postgres:16\n  cache:\n    image: redis:7\n',
+    'prisma/schema.prisma': 'datasource db { provider = "postgresql" }',
+  });
+  const r = detectProjectActions(dir);
+  const names = r.resources.map((x) => x.name);
+  assert.ok(names.some((n) => /local database/i.test(n)));
+  assert.ok(names.some((n) => /local cache/i.test(n)));
+  const cmd = actionsById(r).provision.command;
+  assert.ok(cmd.indexOf('docker compose up -d') < cmd.indexOf('prisma migrate deploy'), 'services come up before migrations');
+});
+
+test('no infra config → provision unavailable with a helpful reason; override forces it', () => {
+  const dir = proj({ 'package.json': JSON.stringify({ scripts: { build: 'tsc' } }), 'node_modules/.keep': '' });
+  const plain = actionsById(detectProjectActions(dir));
+  assert.equal(plain.provision.available, false);
+  assert.match(plain.provision.reason, /backing resources/i);
+  const overridden = actionsById(detectProjectActions(dir, { provision: 'make db' }));
+  assert.equal(overridden.provision.command, 'make db');
+  assert.equal(overridden.provision.available, true);
+});

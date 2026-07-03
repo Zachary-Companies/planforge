@@ -820,7 +820,7 @@ function stopRun(res, ctx, id) {
 // decoupled from core, same as the doctor + run endpoints.
 // ---------------------------------------------------------------------------
 
-const PROJECT_ACTIONS = new Set(['start', 'build', 'publish', 'sync']);
+const PROJECT_ACTIONS = new Set(['start', 'build', 'publish', 'provision', 'sync']);
 const projectRoot = (ctx, name) => join(ctx.workspace, '.planforge', 'projects', name);
 
 function readProjectState(ctx, name) {

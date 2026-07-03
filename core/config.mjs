@@ -85,7 +85,7 @@ function projectsField(configPath, raw) {
   for (const [key, val] of Object.entries(raw)) {
     assertPlainObject(configPath, val, `"projects.${key}"`);
     const entry = {};
-    for (const action of ['start', 'build', 'publish', 'test']) {
+    for (const action of ['start', 'build', 'publish', 'test', 'provision']) {
       if (val[action] === undefined) continue;
       if (typeof val[action] !== 'string') fail(configPath, `"projects.${key}.${action}" must be a string command (or "" to hide it)`);
       entry[action] = val[action];

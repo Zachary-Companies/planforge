@@ -330,6 +330,14 @@ export function buildInterviewPrompt({ answers, preferences } = {}) {
       "automated verify step runs `build` and `test` and will send failures " +
       "back for repair, so a plan whose slices ship real tests converges far " +
       "faster.",
+    "4c. Provision the backing resources. If the app needs a database, file/" +
+      "object storage, a cache, auth, or other services, the plan MUST include " +
+      "(a) the config that declares them IN THE REPO — schema + migrations, " +
+      "security rules, a docker-compose for local dev, or the platform's files " +
+      "(firebase.json + firestore.rules/indexes + storage.rules, supabase/, " +
+      "terraform) — and (b) an early 'set up resources' slice whose acceptance " +
+      "is that those resources exist and the app can read/write them. Prefer " +
+      "the user's chosen provider from the stack preferences.",
     "5. Stack follows preferences. Choose the stack from the preferences " +
       "summary above; record any deviation as an Accepted decision with a " +
       "rationale. If no preferences were set, choose boring, mainstream " +

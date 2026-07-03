@@ -652,6 +652,7 @@ async function cmdProjects(argv) {
     if (!p.exists) continue;
     if (p.syncable) console.log(`  update   git pull --ff-only  (${p.git.behind} behind the remote — run: planforge sync ${p.name})`);
     if (p.hint) console.log(`  note:    ${p.hint}`);
+    if (p.resources && p.resources.length) console.log(`  needs:   ${p.resources.map((r) => r.name).join(', ')}`);
     for (const a of p.actions) {
       console.log(a.available ? `  ${a.id.padEnd(8)} ${a.command}` : `  ${a.id.padEnd(8)} (unavailable) ${a.reason}`);
     }
@@ -722,8 +723,8 @@ async function main() {
   if (command === 'ui') return cmdUi(rest);
   if (command === 'doctor') return cmdDoctor(rest);
   if (command === 'projects') return cmdProjects(rest);
-  if (command === 'start' || command === 'build' || command === 'publish' || command === 'sync' || command === 'verify') return cmdProjectAction(command, rest);
-  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, sync, verify)`);
+  if (['start', 'build', 'publish', 'provision', 'sync', 'verify'].includes(command)) return cmdProjectAction(command, rest);
+  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, provision, sync, verify)`);
 }
 
 // npm installs the bin as a symlink, so compare the realpath too.

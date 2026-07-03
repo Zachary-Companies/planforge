@@ -5,7 +5,7 @@
 //
 // Everything here is pure filesystem inspection (no spawning) so the server,
 // the CLI, and tests share one detector.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -55,6 +55,59 @@ function firstScript(scripts, names) {
   return null;
 }
 
+function readText(path) {
+  try { return readFileSync(path, 'utf8'); } catch { return ''; }
+}
+function firstExisting(dir, names) {
+  for (const n of names) if (existsSync(join(dir, n))) return n;
+  return null;
+}
+
+// What backing resources the project needs (database, storage, cache…) and the
+// ordered commands that set them up — derived from the project's own infra
+// config, so it works for any stack. `{ needs:[{type,name}], steps:[commands] }`.
+// Provisioning real cloud resources needs the user's own auth (the log will show
+// any login prompt); this just runs what the project declares.
+function detectResources(dir) {
+  const needs = [];
+  const steps = [];
+  const seen = new Set();
+  const need = (type, name) => { const k = `${type}:${name}`; if (!seen.has(k)) { seen.add(k); needs.push({ type, name }); } };
+
+  // Local services first (a compose file usually stands up the dev db/cache).
+  const compose = firstExisting(dir, ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']);
+  if (compose) {
+    const body = readText(join(dir, compose)).toLowerCase();
+    if (/postgres|mysql|mariadb|mongo|cockroach/.test(body)) need('database', 'local database (docker)');
+    if (/redis|memcached/.test(body)) need('cache', 'local cache (docker)');
+    if (/minio|localstack/.test(body)) need('storage', 'local storage (docker)');
+    steps.push('docker compose up -d');
+  }
+
+  // ORM / migration tooling.
+  if (existsSync(join(dir, 'prisma', 'schema.prisma'))) { need('database', 'Prisma database'); steps.push('npx --yes prisma migrate deploy'); }
+  else if (firstExisting(dir, ['drizzle.config.ts', 'drizzle.config.js', 'drizzle.config.mjs'])) { need('database', 'Drizzle database'); steps.push('npx --yes drizzle-kit migrate'); }
+  else if (existsSync(join(dir, 'supabase', 'config.toml'))) { need('database', 'Supabase Postgres'); steps.push('npx --yes supabase db push'); }
+
+  // Firebase: deploy the declared services' rules/indexes so the DB + storage
+  // are actually set up.
+  const fb = readJson(join(dir, 'firebase.json'));
+  if (fb && typeof fb === 'object') {
+    const only = [];
+    if (fb.firestore) { need('database', 'Firestore'); only.push('firestore'); }
+    if (fb.database) { need('database', 'Realtime Database'); only.push('database'); }
+    if (fb.storage) { need('storage', 'Cloud Storage'); only.push('storage'); }
+    if (only.length) steps.push(`npx --yes firebase-tools deploy --only ${only.join(',')}`);
+  }
+
+  // Infrastructure-as-code.
+  let entries = [];
+  try { entries = readdirSync(dir); } catch { /* ignore */ }
+  if (entries.some((f) => f.endsWith('.tf'))) { need('infra', 'Terraform resources'); steps.push('terraform init && terraform apply -auto-approve'); }
+
+  return { needs, steps };
+}
+
 // A deploy target we recognize by its config file → a ready-made publish command.
 function detectDeployTarget(dir) {
   if (existsSync(join(dir, 'firebase.json'))) return { label: 'Deploy to Firebase', command: 'npx --yes firebase-tools deploy' };
@@ -72,7 +125,7 @@ function detectDeployTarget(dir) {
  */
 export function detectProjectActions(dir, overrides = {}) {
   const name = basename(dir);
-  const result = { name, dir, exists: existsSync(dir), kind: 'unknown', packageManager: null, needsInstall: false, git: { isRepo: false }, syncable: false, hint: null, actions: [] };
+  const result = { name, dir, exists: existsSync(dir), kind: 'unknown', packageManager: null, needsInstall: false, git: { isRepo: false }, syncable: false, hint: null, resources: [], actions: [] };
   if (!result.exists) return result;
 
   result.git = gitInfo(dir);
@@ -112,9 +165,17 @@ export function detectProjectActions(dir, overrides = {}) {
   // but a target should still surface even for a Node project without one.
   if (!detected.publish && target) detected.publish = { command: target.command, label: target.label };
 
+  // Backing resources (db, storage, cache, infra) the app needs to run.
+  const resources = detectResources(dir);
+  result.resources = resources.needs;
+  if (resources.steps.length) {
+    detected.provision = { command: withInstall(resources.steps.join(' && ')), label: 'Set up resources' };
+  }
+
   const spec = [
     { id: 'start', longRunning: true, missing: 'No dev/start script found. Add one to package.json (e.g. "dev": "vite").' },
     { id: 'build', longRunning: false, missing: 'No build script found. Add a "build" script to package.json.' },
+    { id: 'provision', longRunning: false, confirm: true, missing: 'No backing resources detected. Add the infra config the app needs (schema/migrations, security rules, docker-compose, terraform) — or set projects.<name>.provision.' },
     { id: 'publish', longRunning: false, confirm: true, missing: 'No deploy command detected. Add a "deploy" script, or a firebase.json / vercel.json / netlify.toml — or set projects.' },
   ];
   for (const s of spec) {

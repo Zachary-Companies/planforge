@@ -7,6 +7,7 @@ import { $, esc, h, shortRepo, toast } from '../util.js';
 const ACTION_META = {
   start: { icon: '▶', hint: 'Run the project locally (a dev server).' },
   build: { icon: '⚙', hint: 'Make a production build.' },
+  provision: { icon: '☁', hint: 'Set up the databases, storage, and other resources the app needs.' },
   publish: { icon: '⇧', hint: 'Deploy it to its host.' },
   sync: { icon: '↻', hint: 'Pull the latest built code from GitHub.' },
 };
@@ -56,6 +57,7 @@ export function renderProjects(root, ctx) {
         <div>
           <h2>${esc(p.name)}</h2>
           <div class="dim">${p.repo ? `<code>${esc(shortRepo(p.repo))}</code> · ` : ''}${p.exists ? esc(p.kind) + (p.packageManager ? ` · ${esc(p.packageManager)}` : '') : 'not checked out locally yet'}</div>
+          ${(p.resources && p.resources.length) ? `<div class="project-resources dim">Needs: ${p.resources.map((r) => esc(r.name)).join(' · ')}</div>` : ''}
         </div>
         <div class="project-actions"></div>
       </div>
