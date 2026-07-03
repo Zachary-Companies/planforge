@@ -15,6 +15,23 @@ const ACTION_META = {
 // Pull a localhost URL out of dev-server output so we can offer an Open link.
 const URL_RE = /(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?[^\s'"]*)/i;
 
+// Some cloud resources need a one-time setup in the provider's console the
+// first time (a region/billing choice PlanForge can't make for you). When a
+// failed action's log says so, we surface the console link as a next step
+// instead of a raw error.
+const SETUP_PHRASES = /has ?n['’]?t been set up|has not been set up|get started|not been enabled|must enable|requires billing|blaze plan|upgrade your project|enable .*in the .*console|permission denied|not authenticated|please (log|sign) ?in|run ['"`]?firebase login/i;
+function detectSetupHint(logText) {
+  if (!SETUP_PHRASES.test(logText)) return null;
+  const urls = logText.match(/https?:\/\/[^\s'"()]+/g) || [];
+  // Prefer a console/setup URL over any other.
+  const url = urls.find((u) => /console\.(firebase|cloud)\.google|dashboard|vercel\.com|supabase\.com|netlify/.test(u)) || urls[0] || null;
+  const auth = /not authenticated|please (log|sign) ?in|run ['"`]?firebase login/i.test(logText);
+  const message = auth
+    ? "You need to sign in to your cloud provider first. Run the login command it names in a terminal (e.g. firebase login), then press the button again."
+    : "This resource needs a one-time setup in your cloud console — pick a region / enable it (and billing if asked). Do that once, then press the button again and PlanForge finishes the rest.";
+  return { url, message };
+}
+
 export function renderProjects(root, ctx) {
   let stream = null;
   const destroy = () => { if (stream) { stream.close(); stream = null; } };
@@ -65,6 +82,7 @@ export function renderProjects(root, ctx) {
         <div class="project-log-bar"><span class="project-log-title"></span>
           <a class="project-open" target="_blank" rel="noopener" hidden>Open ↗</a>
           <button class="btn small project-stop" hidden>Stop</button></div>
+        <div class="project-setup-hint" hidden></div>
         <div class="console project-log"></div>
       </div>
     </section>`);
@@ -117,14 +135,29 @@ export function renderProjects(root, ctx) {
       }
 
       let sawUrl = false;
+      let logText = '';
+      let exitOk = true;
+      const hintEl = card.querySelector('.project-setup-hint');
+      hintEl.hidden = true;
       stream = openProjectLog(p.name, logId, (line) => {
         const exit = line.match(/^@exit\s+(.+)$/);
         if (exit) {
           const ok = exit[1] === '0';
+          exitOk = ok;
+          stopBtn.hidden = true;
           appendLog(logEl, ok ? `\n✔ ${action} finished` : `\n✖ ${action} exited (${exit[1]})`, !ok);
+          if (!ok) {
+            const hint = detectSetupHint(logText);
+            if (hint) {
+              hintEl.innerHTML = `<div class="setup-hint-msg">${esc(hint.message)}</div>${hint.url ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(hint.url)}">Open console ↗</a>` : ''}<button class="btn small setup-retry">Try again</button>`;
+              hintEl.querySelector('.setup-retry').addEventListener('click', () => { hintEl.hidden = true; runAction(action); });
+              hintEl.hidden = false;
+            }
+          }
           return;
         }
         appendLog(logEl, line);
+        logText += `${line}\n`;
         if (!sawUrl) {
           const m = line.match(URL_RE);
           if (m) { sawUrl = true; openLink.href = m[1]; openLink.textContent = `Open ${m[1]} ↗`; openLink.hidden = false; }
@@ -132,7 +165,9 @@ export function renderProjects(root, ctx) {
       }, () => {
         stopBtn.hidden = true;
         card.querySelectorAll('.project-actions button').forEach((b) => { b.disabled = false; });
-        refresh();
+        // Re-detect on success (state changed: synced, provisioned, built).
+        // On failure, keep the card as-is so the setup callout + log survive.
+        if (exitOk) refresh();
       });
     };
 

@@ -37,14 +37,22 @@ It has three parts, all driven from a local web UI:
    (or `planforge plan --revise`): it applies your change and runs the full
    deepen + consistency-review pipeline, then the pool builds it.
 
-4. **Run, build, and ship it.** When the pool has built your app, the
-   **Projects** tab gives you **Start / Build / Publish** buttons. PlanForge
-   reads the commands straight from your project — its `package.json` scripts
-   and deploy config (`firebase.json`, `vercel.json`, `netlify.toml`) — so
-   Start runs the dev server (with a clickable link when it detects one) and
-   Publish deploys to the host it finds. Same from the terminal:
-   `planforge start`, `planforge build`, `planforge publish`. Override any
-   command in `planforge.config.json` under `"projects"`.
+4. **Run, build, ship, and set up its resources.** When the pool has built
+   your app, the **Projects** tab gives you **Start / Build / Set up resources
+   / Publish** buttons. PlanForge reads the commands straight from your
+   project — its `package.json` scripts and infra config (`firebase.json`,
+   `docker-compose.yml`, `prisma/`, `vercel.json`, `*.tf`…) — so Start runs the
+   dev server (with a clickable link when it detects one), **Set up resources**
+   provisions the databases/storage/etc. the app needs, and Publish deploys to
+   the host it finds. Same from the terminal: `planforge start`, `build`,
+   `provision`, `publish`. Override any command in `planforge.config.json`
+   under `"projects"`.
+
+   Provisioning uses **your** cloud account. Most providers gate the very first
+   creation of a database or storage bucket behind a one-time click in their
+   console (to pick a region and, sometimes, enable billing). When PlanForge
+   hits that, it shows you the exact console link and a "Try again" button —
+   do the one-time step, and it finishes the rest.
 
 ## Quick start
 

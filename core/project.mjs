@@ -89,15 +89,16 @@ function detectResources(dir) {
   else if (firstExisting(dir, ['drizzle.config.ts', 'drizzle.config.js', 'drizzle.config.mjs'])) { need('database', 'Drizzle database'); steps.push('npx --yes drizzle-kit migrate'); }
   else if (existsSync(join(dir, 'supabase', 'config.toml'))) { need('database', 'Supabase Postgres'); steps.push('npx --yes supabase db push'); }
 
-  // Firebase: deploy the declared services' rules/indexes so the DB + storage
-  // are actually set up.
+  // Firebase: deploy each declared service's rules/indexes as its OWN step, so
+  // one that needs a one-time console setup (Storage, especially on a fresh
+  // project) doesn't block the others. Firestore first — its rules/indexes
+  // usually deploy fine and can auto-create the database.
   const fb = readJson(join(dir, 'firebase.json'));
   if (fb && typeof fb === 'object') {
-    const only = [];
-    if (fb.firestore) { need('database', 'Firestore'); only.push('firestore'); }
-    if (fb.database) { need('database', 'Realtime Database'); only.push('database'); }
-    if (fb.storage) { need('storage', 'Cloud Storage'); only.push('storage'); }
-    if (only.length) steps.push(`npx --yes firebase-tools deploy --only ${only.join(',')}`);
+    const fbtools = 'npx --yes firebase-tools';
+    if (fb.firestore) { need('database', 'Firestore'); steps.push(`${fbtools} deploy --only firestore`); }
+    if (fb.database) { need('database', 'Realtime Database'); steps.push(`${fbtools} deploy --only database`); }
+    if (fb.storage) { need('storage', 'Cloud Storage'); steps.push(`${fbtools} deploy --only storage`); }
   }
 
   // Infrastructure-as-code.

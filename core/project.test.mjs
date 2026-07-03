@@ -148,7 +148,11 @@ test('firebase.json yields a provision action that sets up firestore + storage',
   assert.deepEqual(r.resources.map((x) => x.name).sort(), ['Cloud Storage', 'Firestore']);
   const a = actionsById(r);
   assert.equal(a.provision.available, true);
-  assert.match(a.provision.command, /firebase-tools deploy --only firestore,storage/);
+  // Each service is its own step (so Storage needing a one-time console setup
+  // doesn't block Firestore), Firestore first.
+  assert.match(a.provision.command, /deploy --only firestore/);
+  assert.match(a.provision.command, /deploy --only storage/);
+  assert.ok(a.provision.command.indexOf('--only firestore') < a.provision.command.indexOf('--only storage'));
   assert.equal(a.provision.confirm, true);
 });
 
