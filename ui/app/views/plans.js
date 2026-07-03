@@ -16,6 +16,63 @@ function appendConsoleLine(consoleEl, text, isStderr) {
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
+// The plan pipeline's stages, in order, with human labels. review-N and any
+// future stage name are handled dynamically.
+const PLAN_STAGE_LABELS = {
+  draft: 'Drafting the plan',
+  revise: 'Applying your changes',
+  deepen: 'Digging into the details',
+  write: 'Writing the plan file',
+  scaffold: 'Setting up the project folder',
+};
+function planStageLabel(name) {
+  const review = name.match(/^review-(\d+)/);
+  if (review) return `Consistency review ${review[1]}`;
+  return PLAN_STAGE_LABELS[name] || name;
+}
+
+// A live stage checklist with a per-stage ticking clock. Both the new-plan
+// wizard and the revise/refine box use it so an agent that thinks silently for
+// minutes always looks alive. Returns { el, stage(name), finish(ok) }.
+function createStageTracker() {
+  const el = document.createElement('div');
+  el.className = 'forge-stages';
+  let startedAt = null;
+  const tick = setInterval(() => {
+    const clock = el.querySelector('.stage-active .stage-clock');
+    if (clock && startedAt) clock.textContent = fmtMs(Date.now() - startedAt);
+  }, 1000);
+  const closePrev = (mark) => {
+    const prev = el.querySelector('.stage-active');
+    if (prev) { prev.classList.remove('stage-active'); prev.querySelector('.stage-mark').textContent = mark; }
+  };
+  return {
+    el,
+    stage(name) {
+      closePrev('✔');
+      startedAt = Date.now();
+      el.appendChild(h(`<div class="stage-row stage-active">
+        <span class="stage-mark"><span class="spinner"></span></span>
+        <span class="stage-name">${esc(planStageLabel(name))}</span>
+        <span class="stage-clock dim">0s</span>
+      </div>`));
+    },
+    finish(ok) { clearInterval(tick); closePrev(ok ? '✔' : '✖'); },
+  };
+}
+
+// Route one NDJSON stream event: @plan-stage markers advance the tracker,
+// everything else scrolls the console.
+function feedPlanEvent(tracker, consoleEl, e) {
+  if (e.type === 'progress') {
+    const m = e.line.match(/^@plan-stage\s+(\S+)/);
+    if (m) { tracker.stage(m[1]); return; }
+    appendConsoleLine(consoleEl, e.line, e.stream === 'stderr');
+  } else if (e.type === 'start') {
+    appendConsoleLine(consoleEl, `$ ${e.cmd}`);
+  }
+}
+
 /* ------------------------------------------------------------------ list */
 
 function renderList(root, ctx) {
@@ -80,11 +137,13 @@ function renderDetail(root, ctx, slug) {
     <div class="plan-detail-cols">
       <div class="card md-doc" id="plan-doc"><div class="loading-row"><span class="spinner"></span>loading plan…</div></div>
       <div class="card revise-card">
-        <h3>Revise this plan</h3>
-        <p class="hint">Describe what should change — the plan agent rewrites the document and
-        keeps the status ledger intact.</p>
-        <textarea id="revise-text" placeholder="e.g. Drop the mobile app from v1 and add a public API instead."></textarea>
-        <div class="actions"><button class="btn primary sm" id="revise-btn">Revise plan</button></div>
+        <h3>Add features &amp; refine</h3>
+        <p class="hint">Add new features or change anything — the plan agent applies it, digs into
+        the details, and runs consistency reviews, so the new work is as thorough as the rest.
+        Shipped slices and the status ledger are preserved.</p>
+        <textarea id="revise-text" placeholder="e.g. Add photo comments and a shareable public album link. Also switch storage to Firebase."></textarea>
+        <div class="actions"><button class="btn primary sm" id="revise-btn">Add &amp; refine</button></div>
+        <div class="forge-stages" id="revise-stages" style="margin-top:12px"></div>
         <div class="console" id="revise-console" style="display:none;margin-top:12px"></div>
       </div>
     </div>`;
@@ -110,26 +169,29 @@ function renderDetail(root, ctx, slug) {
     const consoleEl = $('#revise-console', root);
     consoleEl.style.display = 'block';
     consoleEl.innerHTML = '';
+    const tracker = createStageTracker();
+    $('#revise-stages', root).replaceWith(tracker.el);
+    tracker.el.id = 'revise-stages';
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> revising…';
+    btn.innerHTML = '<span class="spinner"></span> refining…';
     try {
-      const last = await streamNdjson(`/api/plans/${encodeURIComponent(slug)}/revise`, { feedback }, (e) => {
-        if (e.type === 'progress') appendConsoleLine(consoleEl, e.line, e.stream === 'stderr');
-      });
+      const last = await streamNdjson(`/api/plans/${encodeURIComponent(slug)}/revise`, { feedback }, (e) => feedPlanEvent(tracker, consoleEl, e));
+      tracker.finish(last?.type === 'done' && last.ok);
       if (last?.type === 'done' && last.ok) {
-        toast('Plan revised');
+        toast('Plan refined');
         textarea.value = '';
         if (!reloading) { reloading = true; await loadDoc(); reloading = false; }
       } else {
-        toast(last?.message || 'Revision failed', 'err');
+        toast(last?.message || 'Refine failed', 'err');
         if (last?.message) appendConsoleLine(consoleEl, last.message, true);
       }
     } catch (err) {
+      tracker.finish(false);
       toast(err.message, 'err');
       appendConsoleLine(consoleEl, err.message, true);
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Revise plan';
+      btn.textContent = 'Add & refine';
     }
   });
   return () => {};
@@ -327,21 +389,6 @@ function renderWizard(root, ctx) {
     return `<h2>Review your answers</h2><div class="review-list">${items.join('')}</div>`;
   }
 
-  // The pipeline's stages, in order, with human labels. review-N and unknown
-  // future stages are handled dynamically.
-  const STAGE_LABELS = {
-    draft: 'Drafting the plan',
-    revise: 'Revising the plan',
-    deepen: 'Digging into the details',
-    write: 'Writing the plan file',
-    scaffold: 'Setting up the project folder',
-  };
-  const stageLabel = (name) => {
-    const review = name.match(/^review-(\d+)/);
-    if (review) return `Consistency review ${review[1]}`;
-    return STAGE_LABELS[name] || name;
-  };
-
   async function forge() {
     root.innerHTML = `
       <div class="wizard">
@@ -359,52 +406,12 @@ function renderWizard(root, ctx) {
         </div>
       </div>`;
     const consoleEl = $('#forge-console', root);
-    const stagesEl = $('#forge-stages', root);
-
-    // Live stage stepper + per-stage elapsed clock: parse @plan-stage markers
-    // from the stream; a ticking timer proves the agent is alive even while
-    // it thinks silently.
-    let activeStage = null;
-    let stageStartedAt = null;
-    const tick = setInterval(() => {
-      const clock = stagesEl.querySelector('.stage-active .stage-clock');
-      if (clock && stageStartedAt) clock.textContent = fmtMs(Date.now() - stageStartedAt);
-    }, 1000);
-    const enterStage = (name) => {
-      if (activeStage) {
-        const prev = stagesEl.querySelector('.stage-active');
-        if (prev) {
-          prev.classList.remove('stage-active');
-          prev.querySelector('.stage-mark').textContent = '✔';
-        }
-      }
-      activeStage = name;
-      stageStartedAt = Date.now();
-      stagesEl.appendChild(h(`<div class="stage-row stage-active">
-        <span class="stage-mark"><span class="spinner"></span></span>
-        <span class="stage-name">${esc(stageLabel(name))}</span>
-        <span class="stage-clock dim">0s</span>
-      </div>`));
-    };
-    const finishStages = (ok) => {
-      clearInterval(tick);
-      const prev = stagesEl.querySelector('.stage-active');
-      if (prev) {
-        prev.classList.remove('stage-active');
-        prev.querySelector('.stage-mark').textContent = ok ? '✔' : '✖';
-      }
-    };
+    const tracker = createStageTracker();
+    $('#forge-stages', root).replaceWith(tracker.el);
 
     try {
-      const last = await streamNdjson('/api/plans', { answers }, (e) => {
-        if (e.type === 'progress') {
-          const stage = e.line.match(/^@plan-stage\s+(\S+)/);
-          if (stage) { enterStage(stage[1]); return; }
-          appendConsoleLine(consoleEl, e.line, e.stream === 'stderr');
-        }
-        if (e.type === 'start') appendConsoleLine(consoleEl, `$ ${e.cmd}`);
-      });
-      finishStages(last?.type === 'done' && last.ok);
+      const last = await streamNdjson('/api/plans', { answers }, (e) => feedPlanEvent(tracker, consoleEl, e));
+      tracker.finish(last?.type === 'done' && last.ok);
       if (destroyed) return;
       if (last?.type === 'done' && last.ok) {
         clearWizardDraft();
@@ -414,7 +421,7 @@ function renderWizard(root, ctx) {
         failBack(last?.message || 'The plan agent did not finish cleanly.');
       }
     } catch (err) {
-      finishStages(false);
+      tracker.finish(false);
       if (!destroyed) failBack(err.message);
     }
 

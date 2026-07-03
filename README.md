@@ -28,7 +28,14 @@ It has three parts, all driven from a local web UI:
    builds, a second agent reviews), each PR merges in a serial lane the moment
    it's review-clean, a fix lane repairs failing or conflicted PRs, and branch
    hygiene runs after every merge — no abandoned branches, no force-readied
-   drafts, no unreviewed merges.
+   drafts, no unreviewed merges. When the plan work drains, a **verify pass**
+   runs the project's own `build` and `test` and spends remaining budget
+   repairing any failure — so a finished run is built, tested, and green, not
+   just merged (`--no-verify` to skip).
+
+   Want to add a feature later? Open the plan and use **Add features & refine**
+   (or `planforge plan --revise`): it applies your change and runs the full
+   deepen + consistency-review pipeline, then the pool builds it.
 
 4. **Run, build, and ship it.** When the pool has built your app, the
    **Projects** tab gives you **Start / Build / Publish** buttons. PlanForge

@@ -3,7 +3,7 @@
 // planner-validation path, the auto-provider failover, and the event emitter.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -725,4 +725,45 @@ test('pool: a fromRequest slice clears its pending request for later plans', POO
   for (const later of seenRequests.slice(1)) {
     assert.deepEqual(later, [], 'request no longer pending after its slice was planned');
   }
+});
+
+// ---- verify-and-repair: build/test the project, spend budget fixing it ----
+import { runVerify } from './orchestrator.mjs';
+
+test('runVerify stops at the first failing step and returns its log tail', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-verify-'));
+  // `true` passes, `false` fails — portable shell builtins.
+  const ok = runVerify(dir, [{ id: 'build', command: 'true' }]);
+  assert.equal(ok.ok, true);
+  const bad = runVerify(dir, [{ id: 'build', command: 'true' }, { id: 'test', command: 'false' }]);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.failedStep, 'test');
+});
+
+test('the pool verifies a project and repairs a failing build with budget', POOL, async () => {
+  const ws = mkdtempSync(join(tmpdir(), 'pf-verify-ws-'));
+  mkdirSync(join(ws, 'app'), { recursive: true });
+  writeFileSync(join(ws, 'app', 'package.json'), JSON.stringify({ scripts: { build: 'vite build', test: 'vitest' } }));
+
+  const events = [];
+  const emit = (type, payload) => events.push({ type, ...payload });
+  let verifyCalls = 0;
+  const runVerifyStub = () => (++verifyCalls === 1 ? { ok: false, failedStep: 'build', command: 'vite build', logTail: 'TypeError: boom' } : { ok: true });
+  const builtFixes = [];
+  const runWorker = async (a) => { builtFixes.push(a.slice); return { ...a, ok: true, branch: 'worker-1/x' }; };
+
+  await runPool({
+    args: makeArgs({ workers: 1, repos: ['o/app'], workspace: ws }),
+    runDir: join(ws, '.planforge', 'runs', 'r'),
+    roles, sliceBudget: 10, emit,
+    deps: { planSome: async () => ({ slices: [], empty: true }), runWorker, mergeWorkerPrs: () => [], runReconcile: async () => {}, runVerify: runVerifyStub },
+  });
+
+  assert.equal(verifyCalls >= 2, true, 'verified, repaired, then re-verified');
+  assert.equal(builtFixes.length, 1, 'one repair slice built');
+  assert.equal(builtFixes[0].kind, 'fix');
+  assert.match(builtFixes[0].notes, /build step failed|TypeError: boom/);
+  assert.ok(events.some((e) => e.type === 'verify-start' && e.repo === 'o/app'));
+  assert.ok(events.some((e) => e.type === 'verify-repair'));
+  assert.ok(events.some((e) => e.type === 'verify-result' && e.ok === true));
 });

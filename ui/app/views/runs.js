@@ -30,6 +30,18 @@ function eventLine(e) {
       return `merged ${(e.merged ?? []).join(', ')}${e.label ? ` (${e.label})` : ''}`;
     case 'fix-scan':
       return `fix scan — found ${e.found}, queued ${e.queued}, fixing ${e.fixing}`;
+    case 'verify-start':
+      return `verifying ${shortRepo(e.repo)} — ${(e.steps ?? []).join(' → ')}`;
+    case 'verify-result':
+      return e.ok
+        ? `✔ ${shortRepo(e.repo)} builds & tests pass`
+        : `✖ ${shortRepo(e.repo)} — ${e.failedStep} failed${e.command ? ` (${e.command})` : ''}`;
+    case 'verify-repair':
+      return `repairing ${shortRepo(e.repo)} ${e.failedStep} (round ${e.round})`;
+    case 'verify-giveup':
+      return `verify ${shortRepo(e.repo)} — stopped (${e.reason}); left for a follow-up run`;
+    case 'verify-failed':
+      return `verify ${shortRepo(e.repo)} — still failing after repair attempts`;
     case 'provider-switch':
       return `providers switched — builder ${e.builder} · reviewer ${e.reviewer}${(e.demoted ?? []).length ? ` · demoted ${(e.demoted ?? []).join(', ')}` : ''}`;
     case 'run-done':
@@ -44,6 +56,10 @@ function eventClass(e) {
   if (e.type === 'worker-done') return e.ok ? 'ok' : 'fail';
   if (e.type === 'merge') return 'merge';
   if (e.type === 'fix-scan') return 'fix';
+  if (e.type === 'verify-result') return e.ok ? 'ok' : 'fail';
+  if (e.type === 'verify-repair') return 'fix';
+  if (e.type === 'verify-start') return 'plan';
+  if (e.type === 'verify-failed' || e.type === 'verify-giveup') return 'warn';
   if (e.type === 'provider-switch') return 'provider';
   if (e.type === 'seed-slices') return 'seed';
   if (e.type === 'plan-result' && e.status === 'saturated') return 'warn';
@@ -58,6 +74,7 @@ function eventTag(e) {
   if (e.type === 'run-done') return 'finish';
   if (e.type === 'seed-slices') return 'seed';
   if (e.type === 'fix-scan') return 'fix';
+  if (e.type.startsWith('verify')) return 'verify';
   if (e.type === 'provider-switch') return 'provider';
   return e.type;
 }

@@ -322,7 +322,14 @@ export function buildInterviewPrompt({ answers, preferences } = {}) {
       "starts, and does one real thing end-to-end.",
     "4. Acceptance criteria per slice. Every slice has at least one " +
       "objective, checkable acceptance line a reviewer can verify without " +
-      "asking the author.",
+      "asking the author. Prefer criteria a machine can check — a command " +
+      "that exits 0, a test that passes.",
+    "4b. Tests and a green build. Set up a test runner and CI in an early " +
+      "slice, and give feature slices their own tests. The project must stay " +
+      "installable, buildable, and test-passing after every phase — an " +
+      "automated verify step runs `build` and `test` and will send failures " +
+      "back for repair, so a plan whose slices ship real tests converges far " +
+      "faster.",
     "5. Stack follows preferences. Choose the stack from the preferences " +
       "summary above; record any deviation as an Accepted decision with a " +
       "rationale. If no preferences were set, choose boring, mainstream " +
@@ -440,6 +447,12 @@ export function buildDeepenPrompt({ currentPlan, preferences } = {}) {
       "gets split into smaller slices in the same phase (new ids at the " +
       "end; never reuse ids). Phase order must still leave something " +
       "runnable after every phase.",
+    "3b. Testable and verifiable. Ensure a test runner + CI exist in an " +
+      "early slice; every feature slice names its test file in `paths` and " +
+      "has an acceptance line a machine can check. The project must stay " +
+      "installable, buildable, and test-passing after each phase (an " +
+      "automated verify step runs `build`/`test` and returns failures for " +
+      "repair).",
     "4. Do NOT invent requirements. Where detail requires a choice the user " +
       "never made, add an open decision (D-item) with options and a " +
       "recommendation, and gate the affected slices with `blocked-on-Dx`. " +

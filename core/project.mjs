@@ -144,6 +144,31 @@ export function detectProjectActions(dir, overrides = {}) {
   return result;
 }
 
+// The ordered commands that prove a project actually works: install its deps,
+// build it, run its tests. Only the steps that exist are returned (a project
+// with no build/test simply verifies nothing). `overrides.build` / `.test`
+// (from config.projects[name]) win; overrides.test === "" disables the test
+// step. Used by the run's verify-and-repair phase and `planforge verify`.
+export function verifySteps(dir, overrides = {}) {
+  if (!existsSync(dir)) return [];
+  const pkg = readJson(join(dir, 'package.json'));
+  if (!pkg || typeof pkg !== 'object') return [];
+  const pm = packageManager(dir);
+  const scripts = pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
+  const steps = [];
+  if (!existsSync(join(dir, 'node_modules'))) steps.push({ id: 'install', command: pm.install });
+
+  if (typeof overrides.build === 'string') { if (overrides.build.trim()) steps.push({ id: 'build', command: overrides.build }); }
+  else if (typeof scripts.build === 'string' && scripts.build.trim()) steps.push({ id: 'build', command: pm.run('build') });
+
+  // The npm-init placeholder ("no test specified" && exit 1) is not a real test.
+  const realTest = typeof scripts.test === 'string' && scripts.test.trim() && !/no test specified/i.test(scripts.test);
+  if (typeof overrides.test === 'string') { if (overrides.test.trim()) steps.push({ id: 'test', command: overrides.test }); }
+  else if (realTest) steps.push({ id: 'test', command: pm.run('test') });
+
+  return steps;
+}
+
 // Scan the workspace for projects worth showing: every configured repo's local
 // dir, plus any scaffolded git folder not in the repo list. Returns detected
 // action reports, existing-first.

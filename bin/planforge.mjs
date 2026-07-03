@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, CONFIG_FILENAME, CONFIG_DEFAULTS } from '../core/config.mjs';
 import { agentInvocation } from '../core/providers.mjs';
 import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT, shellInvocation } from '../core/platform.mjs';
-import { detectProjectActions, listProjects, localDirForRepo } from '../core/project.mjs';
+import { detectProjectActions, listProjects, localDirForRepo, verifySteps } from '../core/project.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -49,8 +49,10 @@ Usage:
       The plan file is committed into the plans repo when it is one.
 
   planforge plan --revise <slug> --feedback <file> [--config <path>]
-      Revise an existing plan in place per the feedback text. The revision
-      preserves shipped statuses and the status ledger (append-only).
+      Add features to (or change) an existing plan: applies the feedback,
+      then runs the same deepen + consistency-review passes as a new plan so
+      the additions are just as thorough. Preserves shipped statuses and the
+      append-only ledger. --no-deepen / --quick trim the passes.
 
   planforge run [--seed-slices <file>] [--max-slices <n>] [--workers <n>] [--dry-run]
                 [--fix-workers <n>] [--no-fix] [--builder <name>] [--reviewer <name>]
@@ -342,8 +344,9 @@ async function cmdPlan(argv) {
   if (!doc) throw new Error('The agent returned no plan content.');
 
   // Stage 2 — deepen: dig into the details until every slice is
-  // implementation-ready. (New plans only; revisions keep their depth.)
-  if (!revising && deepen) {
+  // implementation-ready. Runs for new plans AND revisions, so features added
+  // by a revision get the same thorough treatment (skip with --no-deepen).
+  if (deepen) {
     stage('deepen');
     const output = await runPlanAgent('Deepen plan', prompts.buildDeepenPrompt({ currentPlan: doc, preferences }));
     const deepened = extractPlanDoc(output);
@@ -480,6 +483,7 @@ async function cmdRun(argv) {
     else if (arg === '--workers') overrides.workers = parseIntFlag(need(argv, ++i, '--workers'), '--workers', { min: 1 });
     else if (arg === '--fix-workers') overrides.fixWorkers = parseIntFlag(need(argv, ++i, '--fix-workers'), '--fix-workers', { min: 0 });
     else if (arg === '--no-fix') overrides.fixWorkers = 0;
+    else if (arg === '--no-verify') overrides.verify = false;
     else if (arg === '--builder') overrides.builder = need(argv, ++i, '--builder');
     else if (arg === '--reviewer') overrides.reviewer = need(argv, ++i, '--reviewer');
     else if (arg === '--refactor-every') overrides.refactorEvery = parseIntFlag(need(argv, ++i, '--refactor-every'), '--refactor-every', { min: 0 });
@@ -666,6 +670,23 @@ async function cmdProjectAction(action, argv) {
   const project = resolveProject(nameArg, config);
   if (!project.exists) throw new Error(`Project folder not found: ${project.dir}`);
 
+  // verify = run the project's own build + tests, stopping at the first
+  // failure (no auto-repair — that's the pool's job during a run).
+  if (action === 'verify') {
+    const overrides = config.projects[project.repo] || config.projects[project.name] || {};
+    const steps = verifySteps(project.dir, overrides);
+    if (!steps.length) { console.log(`${project.name}: nothing to verify (no build or test detected).`); return; }
+    console.log(`${project.name}: ${steps.map((s) => s.id).join(' → ')}\n`);
+    for (const step of steps) {
+      console.log(`\n== ${step.id}: ${step.command} ==`);
+      const [b, a] = shellInvocation(step.command);
+      const code = await new Promise((r) => spawn(b, a, { cwd: project.dir, stdio: 'inherit', env: process.env }).on('close', r).on('error', () => r(1)));
+      if (code !== 0) throw new Error(`Verification failed at "${step.id}" (exit ${code}).`);
+    }
+    console.log(`\n${project.name}: verified ✔`);
+    return;
+  }
+
   // sync = pull the built code down from the remote (fast-forward only, so it
   // never rewrites local work). Not a detected command.
   let command;
@@ -701,8 +722,8 @@ async function main() {
   if (command === 'ui') return cmdUi(rest);
   if (command === 'doctor') return cmdDoctor(rest);
   if (command === 'projects') return cmdProjects(rest);
-  if (command === 'start' || command === 'build' || command === 'publish' || command === 'sync') return cmdProjectAction(command, rest);
-  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, sync)`);
+  if (command === 'start' || command === 'build' || command === 'publish' || command === 'sync' || command === 'verify') return cmdProjectAction(command, rest);
+  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, sync, verify)`);
 }
 
 // npm installs the bin as a symlink, so compare the realpath too.

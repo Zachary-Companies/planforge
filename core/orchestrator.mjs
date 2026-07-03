@@ -60,7 +60,27 @@ import {
   providerHasAgent,
   checkProvider,
 } from './providers.mjs';
-import { pathContains } from './platform.mjs';
+import { pathContains, shellInvocation } from './platform.mjs';
+import { verifySteps } from './project.mjs';
+
+// Run a project's verify steps (install → build → test) in its checkout,
+// stopping at the first failure. Returns { ok } or { ok:false, failedStep,
+// command, logTail }. Each step is bounded so a hung build can't stall the run.
+const VERIFY_STEP_TIMEOUT_MS = 20 * 60 * 1000;
+export function runVerify(dir, steps, logDir) {
+  for (const step of steps) {
+    let inv;
+    try { inv = shellInvocation(step.command); } catch (e) { return { ok: false, failedStep: step.id, command: step.command, logTail: e.message }; }
+    const r = spawnSync(inv[0], inv[1], { cwd: dir, encoding: 'utf8', timeout: VERIFY_STEP_TIMEOUT_MS });
+    const output = `$ ${step.command}\n${r.stdout || ''}${r.stderr || ''}`;
+    if (logDir) { try { mkdirSync(logDir, { recursive: true }); writeFileSync(join(logDir, `${step.id}.log`), output); } catch { /* best effort */ } }
+    if ((r.status ?? -1) !== 0) {
+      const tail = `${r.stdout || ''}\n${r.stderr || ''}`.trim().split('\n').slice(-40).join('\n');
+      return { ok: false, failedStep: step.id, command: step.command, logTail: tail || (r.error ? r.error.message : `exit ${r.status}`) };
+    }
+  }
+  return { ok: true };
+}
 
 // Where these scripts live. The per-slice worker engine (the review chain) is
 // resolved relative to this file, so the toolkit works from wherever it is
@@ -74,6 +94,8 @@ const MAX_EMPTY_PLANS = 2;
 // Fix lane: how many times a worker may try to fix a still-failing PR before we
 // give up on it, and how often (ms) we rescan GitHub for fixable worker PRs.
 const MAX_FIX_ATTEMPTS = 2;
+// Verify-and-repair rounds per project before leaving a failure for next run.
+const MAX_VERIFY_ROUNDS = 3;
 const FIX_SCAN_INTERVAL_MS = 120000;
 
 // GitHub API rate-limit guard. The orchestrator's own gh calls (PR listing, merge
@@ -236,6 +258,7 @@ Options:
   --fix-workers <n>     Override config "fixWorkers" (workers reserved to fix
                         deferred failing/conflicting/stale-draft worker PRs).
   --no-fix              Disable the fix lane (build/merge only).
+  --no-verify           Skip the end-of-run build/test verify-and-repair phase.
   --seed-slices <file>  Pre-load a JSON array of slices into the build queue BEFORE
                         the planner runs, for work the planner won't surface on its
                         own. Same slice shape as planner output
@@ -302,6 +325,8 @@ function parseArgs(argv) {
       args.fixWorkers = Number.parseInt(need(), 10);
     } else if (arg === '--no-fix') {
       args.fixWorkers = 0;
+    } else if (arg === '--no-verify') {
+      args.verify = false;
     } else if (arg === '--seed-slices') {
       args.seedSlices = resolve(need());
     } else if (arg === '--builder') {
@@ -1474,6 +1499,48 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
     emit('reconcile-finish', { idx: pendingReconciles.length + 1 });
   }
 
+  // Verify-and-repair: prove each project actually builds and its tests pass,
+  // and spend remaining budget fixing it if not. This is what makes a run
+  // "built, run, and tested", not just "merged". Skipped in dry runs, when a
+  // repo has no build/test to run, or with --no-verify.
+  const verifyFn = deps.runVerify || runVerify;
+  const projectsCfg = args.projects || {};
+  const overridesFor = (repo) => projectsCfg[repo] || projectsCfg[repo.split('/').pop()] || {};
+  if (args.verify !== false) {
+    for (const repo of repos) {
+      const dir = repoDirOf(repo, args.workspace);
+      let steps = verifySteps(dir, overridesFor(repo));
+      if (!steps.length) continue;
+      console.log(`\n######## Verify ${repo} (${steps.map((s) => s.id).join(' → ')}) ########`);
+      emit('verify-start', { repo, steps: steps.map((s) => s.id) });
+      let passed = false;
+      for (let round = 1; round <= MAX_VERIFY_ROUNDS; round += 1) {
+        const v = verifyFn(dir, steps, join(runDir, 'verify', `${repo.split('/').pop()}-r${round}`));
+        emit('verify-result', { repo, round, ok: v.ok, failedStep: v.failedStep, command: v.command });
+        if (v.ok) { console.log(`Verify ${repo}: OK`); passed = true; break; }
+        console.warn(`Verify ${repo}: "${v.failedStep}" failed.`);
+        if (launchedCount >= sliceBudget) { console.warn(`Verify ${repo}: out of slice budget — leaving the failure for a follow-up run.`); emit('verify-giveup', { repo, reason: 'budget', failedStep: v.failedStep }); break; }
+        // One repair slice: give a builder the failure and let it fix + merge.
+        const slice = {
+          id: `verify-fix-${repo.split('/').pop()}-${round}`,
+          repo, kind: 'fix', paths: ['**'],
+          title: `Make ${v.failedStep} pass`,
+          notes: `The project's ${v.failedStep} step failed during verification. Diagnose and fix it so it passes; adjust or add tests as needed, keep the change focused.\n\n$ ${v.command}\n\n${v.logTail}`,
+        };
+        launchedCount += 1;
+        emit('verify-repair', { repo, round, sliceId: slice.id, failedStep: v.failedStep });
+        emitStats();
+        try {
+          await runWorkerFn({ slotId: 1, slice }, join(runDir, 'verify', `${repo.split('/').pop()}-fix${round}`), args);
+        } catch (e) { console.warn(`Verify repair worker crashed: ${e.message}`); }
+        const merged = mergeFn([repo], `verify-fix ${repo} r${round}`, join(runDir, 'verify-merge', String(round)));
+        if (merged.length) { mergedPrs.push(...merged); mergedSliceCount += merged.length; emit('merge', { label: `verify-fix ${repo}`, merged, repo, total: [...new Set(mergedPrs)].length }); }
+        steps = verifySteps(dir, overridesFor(repo)); // node_modules may now exist → install step drops
+      }
+      if (!passed) emit('verify-failed', { repo });
+    }
+  }
+
   const mergedTotal = [...new Set(mergedPrs)].length;
   const exhausted = [...fixAttempts.entries()].filter(([, n]) => n >= MAX_FIX_ATTEMPTS).map(([k]) => k);
   console.log(`\nDone. ${launchedCount} slice(s) attempted, ${mergedTotal} PR(s) merged${fixCap > 0 ? `, ${fixedCount} fixed PR(s) landed` : ''}. Transcripts: ${runDir}`);
@@ -1510,6 +1577,8 @@ function buildRunArgs(config, overrides) {
     planOnly: !!overrides.planOnly,
     dryRun: !!overrides.dryRun,
     requests: overrides.requests ?? [],
+    verify: overrides.verify ?? true,
+    projects: config.projects ?? {},
   };
 }
 
