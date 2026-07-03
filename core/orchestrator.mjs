@@ -905,6 +905,23 @@ export function agentBranchCleanup(repos, label, logDir, { removeWorktrees = fal
         runGit(['worktree', 'prune'], dir);
       }
       runGit(['fetch', '--prune', 'origin'], dir);
+      // Fast-forward the local checkout to the merged remote so the built code
+      // actually lands in the folder (the pool merges PRs on GitHub; without
+      // this the local project stays at the scaffold commit and the Projects
+      // tab can't run/build it). Only when on the default branch, clean, and
+      // behind — ff-only never rewrites, so it's safe.
+      try {
+        const cur = runGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], dir).stdout;
+        const def = (runGit(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], dir).stdout || '').replace(/^origin\//, '') || 'main';
+        const clean = runGit(['status', '--porcelain'], dir).stdout === '';
+        if (cur && cur === def && clean) {
+          const behind = runGit(['rev-list', '--count', `HEAD..origin/${def}`], dir).stdout;
+          if (behind && behind !== '0') {
+            const ff = runGit(['merge', '--ff-only', `origin/${def}`], dir);
+            if (ff.status === 0) lines.push(`${repo}: fast-forwarded local ${def} (+${behind})`);
+          }
+        }
+      } catch { /* best-effort — never block cleanup on a pull */ }
       const dead = new Set();
       const openHeads = new Set();
       let openOk = false;

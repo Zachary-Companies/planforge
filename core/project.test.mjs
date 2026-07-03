@@ -103,3 +103,36 @@ test('listProjects sorts existing first and applies overrides by name or repo', 
   assert.equal(actionsById(list[0]).start.command, 'custom-start');
   assert.equal(list[1].exists, false);
 });
+
+// ---- git awareness: behind-remote detection drives sync + hints ----
+import { spawnSync as sp } from 'node:child_process';
+function gitProj() {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-gitproj-'));
+  const g = (...a) => sp('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+  g('init', '-b', 'main');
+  writeFileSync(join(dir, 'README.md'), 'scaffold');
+  g('add', '-A'); g('commit', '-m', 'scaffold');
+  return { dir, g };
+}
+
+test('a scaffold-only checkout behind its remote is syncable with a helpful hint', () => {
+  const remote = mkdtempSync(join(tmpdir(), 'pf-remote-'));
+  sp('git', ['-C', remote, 'init', '--bare', '-b', 'main']);
+  const { dir, g } = gitProj();
+  g('remote', 'add', 'origin', remote);
+  g('push', '-u', 'origin', 'main');
+  // remote gains the real app; local stays at the scaffold commit
+  const work = mkdtempSync(join(tmpdir(), 'pf-work-'));
+  const gw = (...a) => sp('git', ['-C', work, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+  sp('git', ['clone', remote, work]);
+  writeFileSync(join(work, 'package.json'), JSON.stringify({ scripts: { dev: 'vite', build: 'vite build' } }));
+  gw('add', '-A'); gw('commit', '-m', 'add app'); gw('push', 'origin', 'main');
+  g('fetch', 'origin');
+
+  const r = detectProjectActions(dir);
+  assert.equal(r.kind, 'unknown');
+  assert.equal(r.git.isRepo, true);
+  assert.ok(r.git.behind >= 1);
+  assert.equal(r.syncable, true);
+  assert.match(r.hint, /behind the remote/);
+});

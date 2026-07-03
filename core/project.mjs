@@ -7,6 +7,29 @@
 // the CLI, and tests share one detector.
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+function git(dir, args) {
+  const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return { code: r.status ?? -1, out: (r.stdout || '').trim() };
+}
+
+// Local git state WITHOUT hitting the network — the behind-count reads the
+// last-fetched remote ref (the pool fetches every merge pass, so it's current).
+function gitInfo(dir) {
+  if (!existsSync(join(dir, '.git'))) return { isRepo: false };
+  const branch = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).out || null;
+  const up = git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  const upstream = up.code === 0 ? up.out : null;
+  let ahead = 0; let behind = 0;
+  if (upstream) {
+    const parts = (git(dir, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`]).out || '').split(/\s+/);
+    ahead = Number(parts[0]) || 0;
+    behind = Number(parts[1]) || 0;
+  }
+  const dirty = git(dir, ['status', '--porcelain']).out.length > 0;
+  return { isRepo: true, branch, upstream, ahead, behind, dirty };
+}
 
 // Local folder a repo (or slug) checks out to under the workspace.
 export function localDirForRepo(repoOrSlug, workspace) {
@@ -49,8 +72,13 @@ function detectDeployTarget(dir) {
  */
 export function detectProjectActions(dir, overrides = {}) {
   const name = basename(dir);
-  const result = { name, dir, exists: existsSync(dir), kind: 'unknown', packageManager: null, needsInstall: false, actions: [] };
+  const result = { name, dir, exists: existsSync(dir), kind: 'unknown', packageManager: null, needsInstall: false, git: { isRepo: false }, syncable: false, hint: null, actions: [] };
   if (!result.exists) return result;
+
+  result.git = gitInfo(dir);
+  // The built code often lives on the remote (the pool merges PRs there) but
+  // hasn't been pulled into this folder yet. Offer to update; explain the gap.
+  result.syncable = Boolean(result.git.isRepo && result.git.upstream && result.git.behind > 0 && !result.git.dirty);
 
   const pkg = readJson(join(dir, 'package.json'));
   const isNode = pkg && typeof pkg === 'object';
@@ -100,6 +128,18 @@ export function detectProjectActions(dir, overrides = {}) {
     result.actions.push(d
       ? { id: s.id, label: d.label, command: d.command, longRunning: s.longRunning, available: true, confirm: s.confirm }
       : { id: s.id, label: s.id[0].toUpperCase() + s.id.slice(1), command: null, longRunning: s.longRunning, available: false, reason: s.missing });
+  }
+
+  // A human explanation when nothing is runnable, so a disabled row is never a
+  // dead end.
+  if (result.kind === 'unknown') {
+    if (result.git.behind > 0) {
+      result.hint = `This folder is ${result.git.behind} commit${result.git.behind === 1 ? '' : 's'} behind the remote — the built app is on GitHub but not pulled in yet. Click Update to bring it down.`;
+    } else if (result.git.dirty) {
+      result.hint = 'This folder has uncommitted changes and no package.json/index.html — commit or clean it, or open it in an editor.';
+    } else {
+      result.hint = 'No recognizable app here yet (no package.json or index.html). If the pool is still building, check back after it merges.';
+    }
   }
   return result;
 }

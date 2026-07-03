@@ -8,6 +8,7 @@ const ACTION_META = {
   start: { icon: '▶', hint: 'Run the project locally (a dev server).' },
   build: { icon: '⚙', hint: 'Make a production build.' },
   publish: { icon: '⇧', hint: 'Deploy it to its host.' },
+  sync: { icon: '↻', hint: 'Pull the latest built code from GitHub.' },
 };
 
 // Pull a localhost URL out of dev-server output so we can offer an Open link.
@@ -75,6 +76,17 @@ export function renderProjects(root, ctx) {
     if (!p.exists) {
       actionsEl.innerHTML = '<span class="dim">nothing to run until the pool builds it</span>';
       return card;
+    }
+
+    // Insert a banner + Update button when the local folder is behind the
+    // remote (the pool merges to GitHub; the built code isn't pulled in yet).
+    if (p.syncable || p.hint) {
+      const banner = h(`<div class="project-note${p.syncable ? ' project-note-action' : ''}">
+        <span>${esc(p.hint || `${p.git.behind} update(s) available on GitHub.`)}</span>
+        ${p.syncable ? '<button class="btn small project-update">Update from GitHub</button>' : ''}
+      </div>`);
+      card.querySelector('.project-head').insertAdjacentElement('afterend', banner);
+      banner.querySelector('.project-update')?.addEventListener('click', () => runAction('sync'));
     }
 
     const runAction = async (action, { existingLogId = null } = {}) => {
