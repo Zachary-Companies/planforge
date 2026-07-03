@@ -48,7 +48,7 @@ Usage:
                           wizard's GitHub question); --public for public
       The plan file is committed into the plans repo when it is one.
 
-  planforge plan --revise <slug> --feedback <file> [--config <path>]
+  planforge plan --revise <slug> (--feedback-text "…" | --feedback <file>) [--config <path>]
       Add features to (or change) an existing plan: applies the feedback,
       then runs the same deepen + consistency-review passes as a new plan so
       the additions are just as thorough. Preserves shipped statuses and the
@@ -228,6 +228,7 @@ async function cmdPlan(argv) {
   let configArg = null;
   let reviseSlug = null;
   let feedbackPath = null;
+  let feedbackText = null;
   let passes = 2;
   let deepen = true;
   let scaffold = true;
@@ -241,6 +242,7 @@ async function cmdPlan(argv) {
     else if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
     else if (argv[i] === '--revise') reviseSlug = need(argv, ++i, '--revise');
     else if (argv[i] === '--feedback') feedbackPath = resolve(need(argv, ++i, '--feedback'));
+    else if (argv[i] === '--feedback-text' || argv[i] === '-m') feedbackText = need(argv, ++i, argv[i]);
     else if (argv[i] === '--passes') passes = parseIntFlag(need(argv, ++i, '--passes'), '--passes', { min: 0 });
     else if (argv[i] === '--no-deepen') deepen = false;
     else if (argv[i] === '--quick') { deepen = false; passes = 0; }
@@ -253,9 +255,10 @@ async function cmdPlan(argv) {
     else throw new Error(`Unknown option for plan: ${argv[i]}`);
   }
   const revising = reviseSlug !== null;
-  if (revising && answersPath) throw new Error('Use either --answers (new plan) or --revise + --feedback, not both.');
-  if (revising && !feedbackPath) throw new Error('planforge plan --revise requires --feedback <file>');
-  if (!revising && !answersPath) throw new Error('planforge plan requires --answers <file.json> (or --revise <slug> --feedback <file>)');
+  if (revising && answersPath) throw new Error('Use either --answers (new plan) or --revise, not both.');
+  if (feedbackPath && feedbackText) throw new Error('Use either --feedback <file> or --feedback-text "…", not both.');
+  if (revising && !feedbackPath && !feedbackText) throw new Error('planforge plan --revise needs your change: --feedback-text "what to change" (or --feedback <file>).');
+  if (!revising && !answersPath) throw new Error('planforge plan needs --answers <file.json> for a new plan, or --revise <slug> --feedback-text "…" to change one.');
 
   let answers = null;
   if (!revising) {
@@ -330,9 +333,11 @@ async function cmdPlan(argv) {
     const slug = reviseSlug.replace(/-build-plan(\.md)?$/, '');
     revisePath = join(config.plansPath, `${slug}-build-plan.md`);
     if (!existsSync(revisePath)) throw new Error(`No plan found for slug "${slug}" (${revisePath})`);
-    if (!existsSync(feedbackPath)) throw new Error(`Feedback file not found: ${feedbackPath}`);
+    if (feedbackPath && !existsSync(feedbackPath)) {
+      throw new Error(`Feedback file not found: ${feedbackPath}\nEither create it, or pass the change inline: planforge plan --revise ${slug} --feedback-text "what to change"`);
+    }
     const currentPlan = readFileSync(revisePath, 'utf8');
-    const feedback = readFileSync(feedbackPath, 'utf8');
+    const feedback = feedbackText ?? readFileSync(feedbackPath, 'utf8');
     stage('revise', `(model ${process.env.CLAUDE_CHAIN_MODEL})`);
     const output = await runPlanAgent('Revise plan', prompts.buildRevisePrompt({ currentPlan, feedback, preferences }));
     doc = extractPlanDoc(output);
