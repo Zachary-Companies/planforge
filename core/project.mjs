@@ -96,9 +96,9 @@ function detectResources(dir) {
   const fb = readJson(join(dir, 'firebase.json'));
   if (fb && typeof fb === 'object') {
     const fbtools = 'npx --yes firebase-tools';
-    if (fb.firestore) { need('database', 'Firestore'); steps.push(`${fbtools} deploy --only firestore`); }
-    if (fb.database) { need('database', 'Realtime Database'); steps.push(`${fbtools} deploy --only database`); }
-    if (fb.storage) { need('storage', 'Cloud Storage'); steps.push(`${fbtools} deploy --only storage`); }
+    if (fb.firestore) { need('database', 'Firestore'); steps.push(`${fbtools} deploy --only firestore --force`); }
+    if (fb.database) { need('database', 'Realtime Database'); steps.push(`${fbtools} deploy --only database --force`); }
+    if (fb.storage) { need('storage', 'Cloud Storage'); steps.push(`${fbtools} deploy --only storage --force`); }
   }
 
   // Infrastructure-as-code.
@@ -110,9 +110,12 @@ function detectResources(dir) {
 }
 
 // A deploy target we recognize by its config file → a ready-made publish command.
+// --force / --yes make the deploys non-interactive: without them the CLI tries
+// to prompt (e.g. Firebase's functions artifact cleanup policy) and exits
+// non-zero in an automated context even when the deploy itself succeeded.
 function detectDeployTarget(dir) {
-  if (existsSync(join(dir, 'firebase.json'))) return { label: 'Deploy to Firebase', command: 'npx --yes firebase-tools deploy' };
-  if (existsSync(join(dir, 'vercel.json')) || existsSync(join(dir, '.vercel'))) return { label: 'Deploy to Vercel', command: 'npx --yes vercel deploy --prod' };
+  if (existsSync(join(dir, 'firebase.json'))) return { label: 'Deploy to Firebase', command: 'npx --yes firebase-tools deploy --force' };
+  if (existsSync(join(dir, 'vercel.json')) || existsSync(join(dir, '.vercel'))) return { label: 'Deploy to Vercel', command: 'npx --yes vercel deploy --prod --yes' };
   if (existsSync(join(dir, 'netlify.toml'))) return { label: 'Deploy to Netlify', command: 'npx --yes netlify-cli deploy --prod' };
   return null;
 }
