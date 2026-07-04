@@ -139,6 +139,15 @@ test('parsePlanMarkdown counts phases and open decisions', () => {
   assert.equal(p.openDecisions, 2); // D2 Proposed + D3 Blocked; D1 Accepted
 });
 
+test('parsePlanMarkdown tallies slice build progress', () => {
+  const p = parsePlanMarkdown(PLAN_MD);
+  assert.deepEqual(p.slices, { total: 2, shipped: 0, building: 0, pending: 2, blocked: 0 });
+
+  const mixed = '## 4. Phases\n### Phase 1\n- id: a\n  - status: shipped\n- id: b\n  - status: pending\n- id: c\n  - status: blocked-on-D2\n- id: d\n  - status: shipped\n';
+  const q = parsePlanMarkdown(mixed);
+  assert.deepEqual(q.slices, { total: 4, shipped: 2, building: 0, pending: 1, blocked: 1 });
+});
+
 /* ------------------------------------------------------------- /api/config */
 
 test('GET /api/config returns config + preferences flag', async () => {

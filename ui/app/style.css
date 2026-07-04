@@ -954,3 +954,12 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
   border: 1px solid var(--accent, #e8833a); background: var(--surface-2, rgba(232,131,58,0.08));
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .project-setup-hint .setup-hint-msg { flex: 1 1 260px; font-size: 12.5px; color: var(--fg, inherit); }
+
+/* Plan build-progress bar (cards + detail). */
+.plan-progress { margin: 8px 0 4px; }
+.pp-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.pp-fill { height: 100%; background: linear-gradient(90deg, var(--accent, #e8833a), #f0a75f); border-radius: 999px; transition: width .3s; }
+.pp-label { margin-top: 5px; font-size: 12px; color: var(--muted); }
+.plan-detail-cols .plan-side { display: flex; flex-direction: column; gap: 16px; }
+.build-card h3 { margin: 0 0 8px; font-size: 14px; }
+.build-card .btn { margin-top: 10px; }

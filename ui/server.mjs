@@ -428,7 +428,22 @@ export function parsePlanMarkdown(md) {
       if (!/\bAccepted\b/i.test(block)) openDecisions += 1;
     }
   }
-  return { title, phases, openDecisions };
+  // Slice build progress: count `status: <state>` lines across the phases so
+  // the UI can show how much of the plan is actually built vs still pending.
+  // Match the known status vocabulary anywhere a slice declares it — plans
+  // write it either on its own line (`- status: pending`) or inline
+  // (`· status: pending`). Restricting to the vocabulary avoids matching the
+  // word "status" in prose.
+  const slices = { total: 0, shipped: 0, building: 0, pending: 0, blocked: 0 };
+  for (const m of md.matchAll(/status:\s*(shipped|building|pending|blocked-on-[\w.-]+|blocked)/gi)) {
+    const s = m[1].toLowerCase();
+    slices.total += 1;
+    if (s === 'shipped') slices.shipped += 1;
+    else if (s === 'building') slices.building += 1;
+    else if (s === 'pending') slices.pending += 1;
+    else slices.blocked += 1;
+  }
+  return { title, phases, openDecisions, slices };
 }
 
 function listPlans(ctx) {
@@ -449,6 +464,7 @@ function listPlans(ctx) {
       path,
       phases: parsed.phases,
       openDecisions: parsed.openDecisions,
+      slices: parsed.slices,
       mtime: st.mtimeMs,
     });
   }

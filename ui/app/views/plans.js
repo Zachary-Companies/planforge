@@ -2,7 +2,7 @@
 // the "New plan" wizard: a stepper driven by /api/questions interview steps
 // that streams the plan agent's progress while it forges the document.
 
-import { apiGet, apiText, streamNdjson } from '../api.js';
+import { apiGet, apiPost, apiText, streamNdjson } from '../api.js';
 import { $, $$, esc, fmtMs, h, relTime, toast } from '../util.js';
 import { renderMarkdown } from '../md.js';
 import { interviewSteps } from '../questions.js';
@@ -73,6 +73,18 @@ function feedPlanEvent(tracker, consoleEl, e) {
   }
 }
 
+// A compact "6 / 27 built" progress bar from a plan's slice tallies.
+function planProgress(s) {
+  if (!s || !s.total) return '';
+  const done = s.shipped;
+  const pct = Math.round((done / s.total) * 100);
+  const left = s.total - done;
+  return `<div class="plan-progress" title="${done} shipped · ${s.pending} pending${s.blocked ? ` · ${s.blocked} blocked` : ''}${s.building ? ` · ${s.building} building` : ''}">
+      <div class="pp-bar"><div class="pp-fill" style="width:${pct}%"></div></div>
+      <div class="pp-label">${done} / ${s.total} built${left > 0 ? ` · ${left} to go` : ' · complete'}</div>
+    </div>`;
+}
+
 /* ------------------------------------------------------------------ list */
 
 function renderList(root, ctx) {
@@ -116,6 +128,7 @@ function renderList(root, ctx) {
           <a class="card plan-card" href="#/plans/${encodeURIComponent(p.slug)}">
             <h3>${esc(p.title)}</h3>
             <span class="slug">${esc(p.slug)}-build-plan.md</span>
+            ${planProgress(p.slices)}
             <div class="meta">
               <span class="chip info">${p.phases} phase${p.phases === 1 ? '' : 's'}</span>
               <span class="chip ${p.openDecisions ? 'warn' : 'ok'}">${p.openDecisions
@@ -136,6 +149,8 @@ function renderDetail(root, ctx, slug) {
     <a class="backlink" href="#/plans">&larr; All plans</a>
     <div class="plan-detail-cols">
       <div class="card md-doc" id="plan-doc"><div class="loading-row"><span class="spinner"></span>loading plan…</div></div>
+      <div class="plan-side">
+      <div class="card build-card" id="build-card" hidden></div>
       <div class="card revise-card">
         <h3>Add features &amp; refine</h3>
         <p class="hint">Add new features or change anything — the plan agent applies it, digs into
@@ -146,7 +161,38 @@ function renderDetail(root, ctx, slug) {
         <div class="forge-stages" id="revise-stages" style="margin-top:12px"></div>
         <div class="console" id="revise-console" style="display:none;margin-top:12px"></div>
       </div>
+      </div>
     </div>`;
+
+  // Build-progress card: how much of the plan is built, and a one-click "build
+  // the rest" that starts a pool run. This is the answer to "it isn't doing
+  // everything in the plan" — the pending slices just haven't been built yet.
+  async function loadProgress() {
+    try {
+      const plans = await apiGet('/api/plans');
+      const p = (Array.isArray(plans) ? plans : []).find((x) => x.slug === slug);
+      const s = p?.slices;
+      const card = $('#build-card', root);
+      if (!card || !s || !s.total) return;
+      const left = s.pending + s.building;
+      card.hidden = false;
+      card.innerHTML = `<h3>Build progress</h3>
+        ${planProgress(s)}
+        ${left > 0
+          ? `<p class="hint">${s.pending} slice${s.pending === 1 ? '' : 's'} still to build${s.blocked ? ` (${s.blocked} blocked on an open decision)` : ''}. Run the build pool to work through them.</p>
+             <button class="btn primary sm" id="build-pending">Build the ${s.pending} pending slice${s.pending === 1 ? '' : 's'} ▶</button>`
+          : `<p class="hint">Every slice in this plan is built. 🎉</p>`}`;
+      const btn = $('#build-pending', root);
+      btn?.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const { id } = await apiPost('/api/runs', { maxSlices: Math.max(12, s.pending + 3) });
+          toast('Build pool started');
+          window.location.hash = `#/runs/${encodeURIComponent(id)}`;
+        } catch (err) { toast(err.message, 'err'); btn.disabled = false; }
+      });
+    } catch { /* progress is a nicety; ignore */ }
+  }
 
   let reloading = false;
   async function loadDoc() {
@@ -159,6 +205,7 @@ function renderDetail(root, ctx, slug) {
       if (doc) doc.innerHTML = `<div class="notice err">Could not load plan: ${esc(err.message)}</div>`;
     }
   }
+  loadProgress();
   loadDoc();
 
   $('#revise-btn', root).addEventListener('click', async () => {
