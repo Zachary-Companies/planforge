@@ -180,3 +180,23 @@ test('no infra config → provision unavailable with a helpful reason; override 
   assert.equal(overridden.provision.command, 'make db');
   assert.equal(overridden.provision.available, true);
 });
+
+// ---- verifySteps always reinstalls (repairs a corrupt node_modules) ----
+import { verifySteps } from './project.mjs';
+test('verifySteps always installs first, even when node_modules exists', () => {
+  const withMods = proj({
+    'package.json': JSON.stringify({ scripts: { build: 'tsc', test: 'vitest' } }),
+    'package-lock.json': '{}',
+    'node_modules/.keep': '',
+  });
+  const steps = verifySteps(withMods).map((s) => s.id);
+  assert.deepEqual(steps, ['install', 'build', 'test'], 'install runs before build even with node_modules present');
+
+  // pnpm project uses pnpm install
+  const pnpmProj = proj({ 'package.json': JSON.stringify({ scripts: { build: 'tsc' } }), 'pnpm-lock.yaml': '', 'node_modules/.keep': '' });
+  assert.equal(verifySteps(pnpmProj)[0].command, 'pnpm install');
+
+  // the npm 'no test specified' placeholder is not a real test
+  const noTest = proj({ 'package.json': JSON.stringify({ scripts: { build: 'tsc', test: 'echo "Error: no test specified" && exit 1' } }), 'node_modules/.keep': '' });
+  assert.deepEqual(verifySteps(noTest).map((s) => s.id), ['install', 'build']);
+});

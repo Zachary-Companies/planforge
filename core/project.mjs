@@ -221,7 +221,11 @@ export function verifySteps(dir, overrides = {}) {
   const pm = packageManager(dir);
   const scripts = pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
   const steps = [];
-  if (!existsSync(join(dir, 'node_modules'))) steps.push({ id: 'install', command: pm.install });
+  // Always (re)install before verifying, not just when node_modules is absent:
+  // an install is idempotent when up to date, picks up deps a repair just added,
+  // AND repairs a corrupt/partial node_modules (e.g. an empty @types/node dir
+  // that makes tsc fail with TS2688) — a common cause of "the build won't fix".
+  steps.push({ id: 'install', command: pm.install });
 
   if (typeof overrides.build === 'string') { if (overrides.build.trim()) steps.push({ id: 'build', command: overrides.build }); }
   else if (typeof scripts.build === 'string' && scripts.build.trim()) steps.push({ id: 'build', command: pm.run('build') });
