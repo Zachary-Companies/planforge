@@ -556,6 +556,24 @@ test('extractJsonArray finds the last fenced block or a bare array', () => {
   );
   assert.equal(extractJsonArray('nothing here'), null);
   assert.equal(extractJsonArray('```json\n{"not":"array"}\n```'), null);
+
+  // Codex-style transcript: the real slice array comes early, then tool output
+  // (`gh pr list` → []) and trailing prose. Must still pick the slice array,
+  // not the empty [] and not the prompt's placeholder example.
+  const codex = [
+    'Example format: ```json\n[{"id":"kebab-case-stable-id","repo":"owner/repo","paths":["x"]}]\n```',
+    'OUTPUT:',
+    '```json\n[{"id":"album-crud","repo":"acme/app","paths":["a.ts"]}]\n```',
+    'exec gh pr list ... succeeded:',
+    '[]',
+    'The repo has no open PRs; continuing through the phases.',
+  ].join('\n');
+  const got = extractJsonArray(codex);
+  assert.equal(got?.length, 1);
+  assert.equal(got[0].id, 'album-crud');
+
+  // A genuinely empty result (no slice array anywhere) still returns [].
+  assert.deepEqual(extractJsonArray('surveyed everything; nothing actionable:\n```json\n[]\n```'), []);
 });
 
 // ---- planner prompt content ----

@@ -484,21 +484,39 @@ OUTPUT FORMAT — after your survey, end your message with a SINGLE fenced code 
 The "paths" must be specific enough to prove disjointness (concrete files or tight globs). Do not wrap multiple json blocks; emit exactly one.`;
 }
 
+// Extract the planner's slice array from an agent transcript. Agents that
+// stream reasoning + tool calls (notably Codex) emit several arrays — the real
+// answer, the prompt's example, and raw tool output like `gh pr list`'s `[]` —
+// and the answer is not always the last thing printed. So gather EVERY
+// candidate (fenced blocks + balanced [...] spans), then prefer the last one
+// that looks like real slices (objects with id + repo), ignoring the
+// placeholder example. Falls back to the last valid array (e.g. a genuine []).
 export function extractJsonArray(text) {
-  const fences = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
   const candidates = [];
-  if (fences.length > 0) candidates.push(fences[fences.length - 1][1]);
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start !== -1 && end > start) candidates.push(text.slice(start, end + 1));
-  for (const c of candidates) {
-    try {
-      const arr = JSON.parse(c.trim());
-      if (Array.isArray(arr)) return arr;
-    } catch {
-      // try next candidate
+  for (const m of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) candidates.push(m[1]);
+  // Balanced top-level [...] spans (string-aware, so brackets inside strings
+  // don't confuse the depth count).
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '[') continue;
+    let depth = 0; let inStr = false; let esc = false;
+    for (let j = i; j < text.length; j += 1) {
+      const c = text[j];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '[') depth += 1;
+      else if (c === ']') { depth -= 1; if (depth === 0) { candidates.push(text.slice(i, j + 1)); i = j; break; } }
     }
   }
+  const arrays = [];
+  for (const c of candidates) {
+    try { const a = JSON.parse(c.trim()); if (Array.isArray(a)) arrays.push(a); } catch { /* not JSON */ }
+  }
+  if (!arrays.length) return null;
+  const isPlaceholder = (a) => a.some((s) => s && (s.id === 'kebab-case-stable-id' || s.repo === 'owner/repo'));
+  const sliceLike = (a) => a.length > 0 && a.every((s) => s && typeof s === 'object' && typeof s.id === 'string' && typeof s.repo === 'string') && !isPlaceholder(a);
+  for (let i = arrays.length - 1; i >= 0; i -= 1) if (sliceLike(arrays[i])) return arrays[i];
+  // No real slice array — return the last non-placeholder array (a genuine []).
+  for (let i = arrays.length - 1; i >= 0; i -= 1) if (!isPlaceholder(arrays[i])) return arrays[i];
   return null;
 }
 
