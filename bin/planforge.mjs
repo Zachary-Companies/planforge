@@ -10,6 +10,7 @@
 //   planforge doctor [--json]           check tools, agents, and config health
 //   planforge projects [--json]         list projects + available actions
 //   planforge start|build|publish [p]   run / build / publish a project
+//   planforge fix [project]             build+test it and auto-repair failures
 //
 // The CLI is a thin shell: config loading lives in core/config.mjs, the pool in
 // core/orchestrator.mjs, prompts in planning/prompts.mjs, and the web UI in
@@ -72,6 +73,13 @@ Usage:
 
   planforge ui [--port <n>] [--config <path>]
       Start the local web UI (dashboard, plan wizard, preferences form).
+
+  planforge fix [<project>] [--config <path>]
+      Point the build pool at a project: it runs the build and tests and, when
+      something fails (a type error, a missing dependency, a broken test),
+      spends budget diagnosing and repairing it — opening and merging fixes —
+      until the build and tests pass. No plan work; just make it green.
+      (Same engine runs automatically at the end of every "planforge run".)
 
   planforge projects [--json]
       List the scaffolded projects and the actions available on each.
@@ -489,6 +497,8 @@ async function cmdRun(argv) {
     else if (arg === '--fix-workers') overrides.fixWorkers = parseIntFlag(need(argv, ++i, '--fix-workers'), '--fix-workers', { min: 0 });
     else if (arg === '--no-fix') overrides.fixWorkers = 0;
     else if (arg === '--no-verify') overrides.verify = false;
+    else if (arg === '--verify-only') overrides.verifyOnly = true;
+    else if (arg === '--repo') (overrides.repos = overrides.repos || []).push(need(argv, ++i, '--repo'));
     else if (arg === '--builder') overrides.builder = need(argv, ++i, '--builder');
     else if (arg === '--reviewer') overrides.reviewer = need(argv, ++i, '--reviewer');
     else if (arg === '--refactor-every') overrides.refactorEvery = parseIntFlag(need(argv, ++i, '--refactor-every'), '--refactor-every', { min: 0 });
@@ -502,6 +512,36 @@ async function cmdRun(argv) {
   if (passthrough.length) throw new Error(`Unknown option for run: ${passthrough[0]}`);
 
   const config = loadConfig(configArg || process.cwd());
+  const { runOrchestrator } = await import('../core/orchestrator.mjs');
+  await runOrchestrator(config, overrides);
+}
+
+// ---------------------------------------------------------------------------
+// planforge fix — make the orchestrator build + test a project and repair any
+// failure automatically (no plan work). A focused verify-and-repair run.
+// ---------------------------------------------------------------------------
+
+async function cmdFix(argv) {
+  let configArg = null;
+  let nameArg = null;
+  const overrides = { verifyOnly: true };
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
+    else if (argv[i] === '--max-slices') overrides.maxSlices = parseIntFlag(need(argv, ++i, '--max-slices'), '--max-slices', { min: 1 });
+    else if (argv[i] === '--builder') overrides.builder = need(argv, ++i, '--builder');
+    else if (argv[i] === '--reviewer') overrides.reviewer = need(argv, ++i, '--reviewer');
+    else if (!argv[i].startsWith('--')) nameArg = argv[i];
+    else throw new Error(`Unknown option for fix: ${argv[i]}`);
+  }
+  const config = loadConfig(configArg || process.cwd());
+  // Scope to one project's repo when named; the pool needs a GitHub repo to
+  // open + merge the repair PR.
+  if (nameArg) {
+    const project = resolveProject(nameArg, config);
+    const repo = project.repo || config.repos.find((r) => r.split('/').pop() === project.name);
+    if (!repo) throw new Error(`"${project.name}" isn't in "repos" in planforge.config.json — the fixer opens a PR, so it needs the GitHub repo. Add it there.`);
+    overrides.repos = [repo];
+  }
   const { runOrchestrator } = await import('../core/orchestrator.mjs');
   await runOrchestrator(config, overrides);
 }
@@ -728,8 +768,9 @@ async function main() {
   if (command === 'ui') return cmdUi(rest);
   if (command === 'doctor') return cmdDoctor(rest);
   if (command === 'projects') return cmdProjects(rest);
+  if (command === 'fix') return cmdFix(rest);
   if (['start', 'build', 'publish', 'provision', 'sync', 'verify'].includes(command)) return cmdProjectAction(command, rest);
-  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, provision, sync, verify)`);
+  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, provision, sync, verify, fix)`);
 }
 
 // npm installs the bin as a symlink, so compare the realpath too.

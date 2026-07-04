@@ -33,6 +33,11 @@ It has three parts, all driven from a local web UI:
    repairing any failure — so a finished run is built, tested, and green, not
    just merged (`--no-verify` to skip).
 
+   Hit a broken build or a failing test on its own? **`planforge fix`** (or the
+   **Fix with the build pool** button on a failed action) points the pool
+   straight at it — build and test, then diagnose → repair → re-verify until
+   they pass, without touching the plan.
+
    Want to add a feature later? Open the plan and use **Add features & refine**
    (or `planforge plan --revise`): it applies your change and runs the full
    deepen + consistency-review pipeline, then the pool builds it.

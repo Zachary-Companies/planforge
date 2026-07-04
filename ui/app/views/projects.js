@@ -160,7 +160,8 @@ export function renderProjects(root, ctx) {
               hintEl.querySelector('.fix-with-pool').addEventListener('click', async (e) => {
                 e.target.disabled = true;
                 try {
-                  const { id } = await apiPost('/api/runs', {});
+                  // Focused repair: verify + fix this one project, not a full plan run.
+                  const { id } = await apiPost('/api/runs', { verifyOnly: true, ...(p.repo ? { repo: p.repo } : {}) });
                   toast('Build pool started — it will fix and re-verify');
                   window.location.hash = `#/runs/${encodeURIComponent(id)}`;
                 } catch (err) { toast(err.message, 'err'); e.target.disabled = false; }

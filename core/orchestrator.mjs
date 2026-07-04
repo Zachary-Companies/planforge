@@ -1281,7 +1281,9 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Fix lane has work (or might, until a scan confirms otherwise).
-  const fixAlive = () => fixCap > 0 && (fixInFlight.size > 0 || fixReady.length > 0 || !fixDry);
+  // A verify-only run does no planning/building or fix-lane work — it goes
+  // straight to the verify-and-repair phase below.
+  const fixAlive = () => !args.verifyOnly && fixCap > 0 && (fixInFlight.size > 0 || fixReady.length > 0 || !fixDry);
 
   // Reserve fixCap slots for the fix lane while it has work, so builds can't starve it.
   function launchReady() {
@@ -1389,6 +1391,9 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
     mergedPrs.push(...drainedAtStart);
     emit('merge', { label: 'drain-start', merged: drainedAtStart, total: [...new Set(mergedPrs)].length });
   }
+
+  // verify-only: no planning/building — fall straight through to verify+repair.
+  if (args.verifyOnly) dry = true;
 
   const PLAN_TICK = Symbol('plan-done');
   while (active.size > 0 || ready.length > 0 || (!dry && launchedCount < sliceBudget) || fixAlive()) {
@@ -1557,9 +1562,10 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
 // ---------------------------------------------------------------------------
 
 function buildRunArgs(config, overrides) {
+  const verifyOnly = !!overrides.verifyOnly;
   return {
     workspace: config.workspace,
-    repos: [...config.repos],
+    repos: overrides.repos ? [...overrides.repos] : [...config.repos],
     plansDir: config.plansDir,
     plansPath: config.plansPath,
     preferencesPath: config.preferencesPath,
@@ -1572,12 +1578,14 @@ function buildRunArgs(config, overrides) {
     reviewer: overrides.reviewer ?? null,
     refactorEvery: overrides.refactorEvery ?? defaultRefactorEvery(),
     reconcileEvery: overrides.reconcileEvery ?? 0,
-    reconcile: overrides.reconcile ?? true,
+    // A focused fix run doesn't touch the plan, so skip the plan reconcile.
+    reconcile: verifyOnly ? false : (overrides.reconcile ?? true),
     depsLink: overrides.depsLink ?? true,
     planOnly: !!overrides.planOnly,
     dryRun: !!overrides.dryRun,
     requests: overrides.requests ?? [],
     verify: overrides.verify ?? true,
+    verifyOnly,
     projects: config.projects ?? {},
   };
 }

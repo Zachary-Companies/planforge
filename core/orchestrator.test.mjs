@@ -767,3 +767,27 @@ test('the pool verifies a project and repairs a failing build with budget', POOL
   assert.ok(events.some((e) => e.type === 'verify-repair'));
   assert.ok(events.some((e) => e.type === 'verify-result' && e.ok === true));
 });
+
+test('verify-only: skips planning/building, still verifies and repairs', POOL, async () => {
+  const ws = mkdtempSync(join(tmpdir(), 'pf-vonly-'));
+  mkdirSync(join(ws, 'app'), { recursive: true });
+  writeFileSync(join(ws, 'app', 'package.json'), JSON.stringify({ scripts: { build: 'tsc' } }));
+
+  let planned = 0;
+  const planSome = async () => { planned += 1; return { slices: [], empty: true }; };
+  let verifyCalls = 0;
+  const runVerifyStub = () => (++verifyCalls === 1 ? { ok: false, failedStep: 'build', command: 'tsc', logTail: 'TS2688' } : { ok: true });
+  const fixes = [];
+  const runWorker = async (a) => { fixes.push(a.slice); return { ...a, ok: true, branch: 'worker-1/x' }; };
+
+  await runPool({
+    args: makeArgs({ workers: 1, repos: ['o/app'], workspace: ws, verifyOnly: true }),
+    runDir: join(ws, '.planforge', 'runs', 'r'),
+    roles, sliceBudget: 10, emit: () => {},
+    deps: { planSome, runWorker, mergeWorkerPrs: () => [], runReconcile: async () => {}, runVerify: runVerifyStub },
+  });
+
+  assert.equal(planned, 0, 'verify-only never calls the planner');
+  assert.equal(fixes.length, 1, 'it still repaired the failing build');
+  assert.equal(fixes[0].kind, 'fix');
+});

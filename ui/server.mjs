@@ -708,6 +708,9 @@ async function startRun(res, ctx, body) {
   if (maxSlices !== undefined) args.push('--max-slices', String(maxSlices));
   if (body.builder) args.push('--builder', body.builder);
   if (body.reviewer) args.push('--reviewer', body.reviewer);
+  // Focused "fix this project" run: verify + repair only, scoped to one repo.
+  if (body.verifyOnly) args.push('--verify-only');
+  if (typeof body.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(body.repo)) args.push('--repo', body.repo);
   mkdirSync(ctx.runsRoot, { recursive: true });
   if (Array.isArray(body.seedSlices) && body.seedSlices.length) {
     mkdirSync(ctx.tmpDir, { recursive: true });
