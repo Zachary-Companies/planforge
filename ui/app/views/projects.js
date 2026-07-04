@@ -152,6 +152,20 @@ export function renderProjects(root, ctx) {
               hintEl.innerHTML = `<div class="setup-hint-msg">${esc(hint.message)}</div>${hint.url ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(hint.url)}">Open console ↗</a>` : ''}<button class="btn small setup-retry">Try again</button>`;
               hintEl.querySelector('.setup-retry').addEventListener('click', () => { hintEl.hidden = true; runAction(action); });
               hintEl.hidden = false;
+            } else if (action !== 'sync') {
+              // Not a console/auth gate — looks like a code or dependency bug.
+              // Offer to let the build pool diagnose, repair, and re-verify it.
+              hintEl.innerHTML = `<div class="setup-hint-msg">The ${esc(action)} failed on what looks like a code or dependency problem — not something you did. The build pool can fix it: it diagnoses the failure, repairs it, and re-checks that the build and tests pass.</div><button class="btn small primary fix-with-pool">Fix with the build pool ▶</button><button class="btn small setup-retry">Try again</button>`;
+              hintEl.querySelector('.setup-retry').addEventListener('click', () => { hintEl.hidden = true; runAction(action); });
+              hintEl.querySelector('.fix-with-pool').addEventListener('click', async (e) => {
+                e.target.disabled = true;
+                try {
+                  const { id } = await apiPost('/api/runs', {});
+                  toast('Build pool started — it will fix and re-verify');
+                  window.location.hash = `#/runs/${encodeURIComponent(id)}`;
+                } catch (err) { toast(err.message, 'err'); e.target.disabled = false; }
+              });
+              hintEl.hidden = false;
             }
           }
           return;
