@@ -150,6 +150,7 @@ function renderDetail(root, ctx, slug) {
     <div class="plan-detail-cols">
       <div class="card md-doc" id="plan-doc"><div class="loading-row"><span class="spinner"></span>loading plan…</div></div>
       <div class="plan-side">
+      <div class="card decisions-card" id="decisions-card" hidden></div>
       <div class="card build-card" id="build-card" hidden></div>
       <div class="card revise-card">
         <h3>Add features &amp; refine</h3>
@@ -194,6 +195,46 @@ function renderDetail(root, ctx, slug) {
     } catch { /* progress is a nicety; ignore */ }
   }
 
+  // Open decisions → a form. Each unresolved decision gets its question, its
+  // recommendation for context, and a field to accept the recommendation or
+  // type your own answer. Accepting is instant (no agent) and unblocks any
+  // slice gated on it.
+  async function loadDecisions() {
+    const card = $('#decisions-card', root);
+    if (!card) return;
+    let decisions = [];
+    try { ({ decisions } = await apiGet(`/api/plans/${encodeURIComponent(slug)}/decisions`)); } catch { return; }
+    const open = (decisions || []).filter((d) => d.status !== 'Accepted');
+    if (!open.length) { card.hidden = true; return; }
+    card.hidden = false;
+    card.innerHTML = `<h3>Decisions to make</h3>
+      <p class="hint">${open.length} decision${open.length === 1 ? '' : 's'} still open — they gate work until you settle them. Accept the recommendation, or type your own answer.</p>
+      ${open.map((d) => `
+        <div class="decision" data-id="${esc(d.id)}">
+          <div class="decision-q"><strong>${esc(d.id)}</strong> — ${esc(d.question)}</div>
+          ${d.body ? `<div class="decision-body dim">${esc(d.body)}</div>` : ''}
+          <div class="decision-row">
+            <input class="decision-answer" placeholder="Accept the recommendation, or type your answer">
+            <button class="btn small primary decision-accept">Accept</button>
+          </div>
+        </div>`).join('')}`;
+    for (const el of $$('.decision', card)) {
+      const id = el.dataset.id;
+      const input = $('.decision-answer', el);
+      const btn = $('.decision-accept', el);
+      const accept = async () => {
+        btn.disabled = true;
+        try {
+          await apiPost(`/api/plans/${encodeURIComponent(slug)}/decide`, { id, answer: input.value.trim() });
+          toast(`${id} accepted`);
+          await Promise.all([loadDoc(), loadDecisions(), loadProgress()]);
+        } catch (err) { toast(err.message, 'err'); btn.disabled = false; }
+      };
+      btn.addEventListener('click', accept);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') accept(); });
+    }
+  }
+
   let reloading = false;
   async function loadDoc() {
     try {
@@ -206,6 +247,7 @@ function renderDetail(root, ctx, slug) {
     }
   }
   loadProgress();
+  loadDecisions();
   loadDoc();
 
   $('#revise-btn', root).addEventListener('click', async () => {

@@ -12,6 +12,8 @@
 //   GET  /api/plans/:slug         raw plan markdown
 //   POST /api/plans               spawn `planforge plan --answers <tmp>` (NDJSON stream)
 //   POST /api/plans/:slug/revise  spawn `planforge plan --revise <slug> --feedback <tmp>`
+//   GET  /api/plans/:slug/decisions   parsed open decisions (id/question/status/body)
+//   POST /api/plans/:slug/decide      accept a decision in-place (id, optional answer)
 //   GET  /api/runs                run dirs under .planforge/runs/ + last stats
 //   POST /api/runs                spawn `planforge run …` detached, return run id
 //   GET  /api/runs/:id/events     SSE: replay events.ndjson from byte 0, then tail
@@ -413,6 +415,70 @@ function sliceSection(md, headingRe) {
 }
 
 const DECISION_START = /^(?:#{1,6}\s+)?(?:[-*+]\s+)?(?:\*\*)?D\d+\b/;
+
+// Parse the "## 3. Open decisions" section into structured decisions so the UI
+// can present a form. Each: { id, question, status, body }.
+export function parseDecisions(md) {
+  const section = sliceSection(md, /open decisions/i);
+  if (!section) return [];
+  const lines = section.split('\n');
+  const starts = [];
+  for (let i = 0; i < lines.length; i += 1) if (DECISION_START.test(lines[i].trim())) starts.push(i);
+  const out = [];
+  for (let s = 0; s < starts.length; s += 1) {
+    const block = lines.slice(starts[s], starts[s + 1] ?? lines.length).join('\n').trim();
+    const id = (block.match(/\bD\d+\b/) ?? [])[0];
+    if (!id) continue;
+    const question = (block.match(/D\d+\s*[—–-]\s*([\s\S]+?)\*\*/) ?? [])[1]?.replace(/\s+/g, ' ').trim()
+      ?? (block.match(/D\d+\s*[—–-]\s*(.+)/) ?? [])[1]?.trim() ?? '';
+    const statusM = block.match(/\*\*\s*[—–-]\s*(Proposed|Accepted|Blocked)\b/i) ?? block.match(/\b(Proposed|Accepted|Blocked)\b/i);
+    const status = statusM ? statusM[1][0].toUpperCase() + statusM[1].slice(1).toLowerCase() : 'Proposed';
+    const body = (block.match(/\b(?:Proposed|Accepted|Blocked)\b\s*:?\s*([\s\S]*)/i) ?? [])[1]?.replace(/\s+/g, ' ').trim() ?? '';
+    out.push({ id, question, status, body });
+  }
+  return out;
+}
+
+// Accept a decision in-place: flip its status to Accepted (optionally setting a
+// custom answer) and unblock any slice gated on it (status: blocked-on-<id> →
+// pending). Deterministic — no agent. Returns { md, changed }.
+export function applyDecision(md, id, answer) {
+  if (!/^D\d+$/.test(id)) return { md, changed: false };
+  const lines = md.split('\n');
+  // Locate the decision's block within the open-decisions section.
+  let inSection = false; let blockStart = -1; let blockEnd = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/^##\s/.test(lines[i])) { if (inSection) break; inSection = /open decisions/i.test(lines[i]); continue; }
+    if (!inSection) continue;
+    if (DECISION_START.test(lines[i].trim())) {
+      if (blockStart >= 0) { blockEnd = i; break; }
+      if (new RegExp(`\\b${id}\\b`).test(lines[i])) blockStart = i;
+    }
+  }
+  if (blockStart < 0) return { md, changed: false };
+  if (blockEnd < 0) { blockEnd = blockStart + 1; while (blockEnd < lines.length && !DECISION_START.test(lines[blockEnd].trim()) && !/^##\s/.test(lines[blockEnd])) blockEnd += 1; }
+
+  const block = lines.slice(blockStart, blockEnd);
+  const joined = block.join(' ');
+  const question = (joined.match(/D\d+\s*[—–-]\s*([\s\S]+?)\*\*/) ?? [])[1]?.replace(/\s+/g, ' ').trim()
+    ?? (block[0].match(/D\d+\s*[—–-]\s*(.+)/) ?? [])[1]?.trim() ?? '';
+  const trimmedAnswer = (answer ?? '').trim();
+  if (trimmedAnswer) {
+    // Replace the whole block with a clean Accepted line carrying the answer.
+    block.splice(0, block.length, `- **${id} — ${question}** — Accepted: ${trimmedAnswer} (owner decision)`);
+  } else {
+    // Adopt the recommendation: flip the first Proposed/Blocked in the block to
+    // Accepted (works whether the status is inline or on its own line).
+    for (let i = 0; i < block.length; i += 1) {
+      if (/\b(Proposed|Blocked)\b/i.test(block[i])) { block[i] = block[i].replace(/\b(Proposed|Blocked)\b/i, 'Accepted'); break; }
+    }
+  }
+  const next = [...lines.slice(0, blockStart), ...block, ...lines.slice(blockEnd)];
+  let outMd = next.join('\n');
+  // Unblock slices gated on this decision.
+  outMd = outMd.replace(new RegExp(`(status:\\s*)blocked-on-${id}\\b`, 'gi'), '$1pending');
+  return { md: outMd, changed: outMd !== md };
+}
 
 export function parsePlanMarkdown(md) {
   const title = (md.match(/^#\s+(.+?)\s*$/m)?.[1] ?? '').replace(/\s#+$/, '').trim();
@@ -1191,6 +1257,37 @@ export function createRequestHandler(ctx, options, sseClients) {
       if (!existsSync(path)) { json(res, 404, { error: `unknown plan: ${slug}` }); return; }
       res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(readFileSync(path));
+    }],
+
+    ['GET', /^\/api\/plans\/([^/]+)\/decisions$/, (req, res, m) => {
+      const slug = decodeURIComponent(m[1]);
+      if (!safeName(slug)) { json(res, 400, { error: 'invalid plan slug' }); return; }
+      const path = join(ctx.plansDir, `${slug}-build-plan.md`);
+      if (!existsSync(path)) { json(res, 404, { error: `unknown plan: ${slug}` }); return; }
+      json(res, 200, { decisions: parseDecisions(readFileSync(path, 'utf8')) });
+    }],
+
+    ['POST', /^\/api\/plans\/([^/]+)\/decide$/, async (req, res, m) => {
+      const slug = decodeURIComponent(m[1]);
+      if (!safeName(slug)) { json(res, 400, { error: 'invalid plan slug' }); return; }
+      const path = join(ctx.plansDir, `${slug}-build-plan.md`);
+      if (!existsSync(path)) { json(res, 404, { error: `unknown plan: ${slug}` }); return; }
+      const body = await readJsonBody(req, res);
+      if (body === undefined) return;
+      if (!/^D\d+$/.test(body.id ?? '')) { json(res, 400, { error: 'body.id must be a decision id like "D3"' }); return; }
+      if (body.answer !== undefined && typeof body.answer !== 'string') { json(res, 400, { error: 'body.answer must be a string' }); return; }
+      const md = readFileSync(path, 'utf8');
+      const { md: nextMd, changed } = applyDecision(md, body.id, body.answer);
+      if (!changed) { json(res, 409, { error: `${body.id} not found or already accepted` }); return; }
+      writeFileSync(path, nextMd);
+      // Best-effort commit into the plans repo if it is one.
+      try {
+        if (spawnSync('git', ['-C', ctx.plansDir, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }).stdout.trim() === 'true') {
+          spawnSync('git', ['-C', ctx.plansDir, 'add', path]);
+          spawnSync('git', ['-C', ctx.plansDir, 'commit', '-m', `plan(${slug}): accept ${body.id}`]);
+        }
+      } catch { /* commit is a nicety */ }
+      json(res, 200, { ok: true, decisions: parseDecisions(nextMd), slices: parsePlanMarkdown(nextMd).slices });
     }],
 
     ['POST', /^\/api\/plans\/([^/]+)\/revise$/, async (req, res, m) => {

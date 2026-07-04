@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startServer, parsePlanMarkdown, shellSplit, FALLBACK_QUESTIONS } from './server.mjs';
+import { startServer, parsePlanMarkdown, parseDecisions, applyDecision, shellSplit, FALLBACK_QUESTIONS } from './server.mjs';
 
 let ws; // fixture workspace
 let srv; // { server, ctx, port, url, stop }
@@ -654,4 +654,42 @@ test('POST /api/projects/:name/action runs an action and the log streams to @exi
   } finally {
     delete process.env.PLANFORGE_PROJECT_CMD;
   }
+});
+
+test('parseDecisions extracts id/status; applyDecision accepts + unblocks', () => {
+  const d = parseDecisions(PLAN_MD);
+  assert.deepEqual(d.map((x) => [x.id, x.status]), [['D1', 'Accepted'], ['D2', 'Proposed'], ['D3', 'Blocked']]);
+
+  const gated = `${PLAN_MD}\n- id: gated · status: blocked-on-D2\n`;
+  const r = applyDecision(gated, 'D2', '');
+  assert.equal(r.changed, true);
+  assert.equal(parseDecisions(r.md).find((x) => x.id === 'D2').status, 'Accepted');
+  assert.match(r.md, /status:\s*pending/); // the blocked-on-D2 slice was unblocked
+  assert.doesNotMatch(r.md, /blocked-on-D2/);
+
+  const withAnswer = applyDecision(PLAN_MD, 'D3', 'Firebase Hosting');
+  assert.match(withAnswer.md, /\*\*D3 —[\s\S]*Accepted: Firebase Hosting/);
+  assert.equal(applyDecision(PLAN_MD, 'D9', '').changed, false); // unknown id
+});
+
+test('POST /api/plans/:slug/decide accepts a decision and persists it', async () => {
+  const dir = join(ws, 'plans');
+  writeFileSync(join(dir, 'decide-demo-build-plan.md'), `${PLAN_MD}\n- id: gated · status: blocked-on-D2\n`);
+  const before = await (await fetch(`${base}/api/plans/decide-demo/decisions`)).json();
+  assert.equal(before.decisions.filter((d) => d.status !== 'Accepted').length, 2);
+
+  const res = await fetch(`${base}/api/plans/decide-demo/decide`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'D2', answer: 'Cognito' }),
+  });
+  assert.equal(res.status, 200);
+  const out = await res.json();
+  assert.equal(out.decisions.find((d) => d.id === 'D2').status, 'Accepted');
+  const md = readFileSync(join(dir, 'decide-demo-build-plan.md'), 'utf8');
+  assert.match(md, /Accepted: Cognito/);
+  assert.doesNotMatch(md, /blocked-on-D2/);
+
+  const bad = await fetch(`${base}/api/plans/decide-demo/decide`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'nope' }),
+  });
+  assert.equal(bad.status, 400);
 });

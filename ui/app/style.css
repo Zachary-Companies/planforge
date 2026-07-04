@@ -963,3 +963,12 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 .plan-detail-cols .plan-side { display: flex; flex-direction: column; gap: 16px; }
 .build-card h3 { margin: 0 0 8px; font-size: 14px; }
 .build-card .btn { margin-top: 10px; }
+
+/* Open-decisions form on the plan detail. */
+.decisions-card h3 { margin: 0 0 6px; font-size: 14px; }
+.decision { padding: 10px 0; border-top: 1px solid var(--border); }
+.decision:first-of-type { border-top: 0; }
+.decision-q { font-size: 13px; margin-bottom: 4px; }
+.decision-body { font-size: 12px; line-height: 1.45; margin-bottom: 8px; max-height: 4.4em; overflow: auto; }
+.decision-row { display: flex; gap: 8px; align-items: center; }
+.decision-row .decision-answer { flex: 1 1 auto; }
