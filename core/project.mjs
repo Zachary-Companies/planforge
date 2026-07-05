@@ -27,8 +27,14 @@ function gitInfo(dir) {
     ahead = Number(parts[0]) || 0;
     behind = Number(parts[1]) || 0;
   }
+  // Distinguish tracked edits from mere untracked files. Untracked files (a
+  // .firebase/ deploy cache, a dist/, an editor scratch file) do NOT block a
+  // git fast-forward — git leaves them alone unless an incoming commit adds
+  // that exact path. Only changes to TRACKED files complicate a pull. Treating
+  // every untracked file as "dirty" manufactures a dead end out of nothing.
   const dirty = git(dir, ['status', '--porcelain']).out.length > 0;
-  return { isRepo: true, branch, upstream, ahead, behind, dirty };
+  const trackedDirty = git(dir, ['status', '--porcelain', '--untracked-files=no']).out.length > 0;
+  return { isRepo: true, branch, upstream, ahead, behind, dirty, trackedDirty };
 }
 
 // Fetch the remote, then re-read git state. For the moment right before an
@@ -264,7 +270,9 @@ export function detectProjectActions(dir, overrides = {}) {
   result.git = gitInfo(dir);
   // The built code often lives on the remote (the pool merges PRs there) but
   // hasn't been pulled into this folder yet. Offer to update; explain the gap.
-  result.syncable = Boolean(result.git.isRepo && result.git.upstream && result.git.behind > 0 && !result.git.dirty);
+  // Only TRACKED edits block a fast-forward — an untracked deploy cache must
+  // not hide the Update button (build/publish auto-stash tracked edits anyway).
+  result.syncable = Boolean(result.git.isRepo && result.git.upstream && result.git.behind > 0 && !result.git.trackedDirty);
 
   const pkg = readJson(join(dir, 'package.json'));
   const isNode = pkg && typeof pkg === 'object';

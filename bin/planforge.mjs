@@ -734,16 +734,34 @@ async function cmdProjectAction(action, argv) {
   // Build/publish/provision must run against the latest merged code — the pool
   // merges PRs on GitHub, and a checkout that was never pulled will happily
   // build and deploy the OLD app (features "missing" in production, evals
-  // failing against it). Fetch for a current behind-count, fast-forward when
-  // clean, refuse (loudly) when local edits block the pull. --stale skips.
+  // failing against it). Fetch for a current behind-count and fast-forward.
+  // Untracked files (a .firebase/ deploy cache, a dist/) never block a
+  // fast-forward, so they're ignored; genuine tracked edits are auto-stashed
+  // over the pull and restored after, so a routine publish never dead-ends in
+  // a "go fix git in a terminal" error. --stale skips the whole step.
   if (['build', 'publish', 'provision'].includes(action) && !stale && project.git?.isRepo && project.git.upstream) {
     const fresh = refreshGitInfo(project.dir);
     if (fresh.behind > 0) {
-      if (fresh.dirty) {
-        throw new Error(`${project.name} is ${fresh.behind} commit${fresh.behind === 1 ? '' : 's'} behind ${fresh.upstream}, but has uncommitted local changes, so it can't be fast-forwarded — a ${action} now would use stale code missing what the pool already merged. Commit or stash the local changes and retry, or pass --stale to ${action} the folder as-is.`);
+      const n = `${fresh.behind} commit${fresh.behind === 1 ? '' : 's'}`;
+      if (fresh.trackedDirty) {
+        console.log(`${project.name}: ${n} behind ${fresh.upstream} with local edits — stashing them, updating, then restoring.\n`);
+        await runStep('git stash push -m planforge-autosync');
+        try {
+          await runStep('git pull --ff-only');
+        } catch (err) {
+          // Leave the tree as the user had it, edits and all, before failing.
+          await runStep('git stash pop').catch(() => {});
+          throw err;
+        }
+        try {
+          await runStep('git stash pop');
+        } catch {
+          throw new Error(`${project.name}: updated to ${fresh.upstream}, but your local edits conflict with the new code. They are safe in \`git stash\` (message "planforge-autosync") — resolve them with \`git stash pop\` in ${project.dir}, then retry.`);
+        }
+      } else {
+        console.log(`${project.name}: ${n} behind ${fresh.upstream} — updating first so the ${action} uses the latest merged code.\n`);
+        await runStep('git pull --ff-only');
       }
-      console.log(`${project.name}: ${fresh.behind} commit${fresh.behind === 1 ? '' : 's'} behind ${fresh.upstream} — updating first so the ${action} uses the latest merged code.\n`);
-      await runStep('git pull --ff-only');
       // The pull can change dependencies and even the detected commands
       // (scripts, deploy config) — reinstall and re-detect before acting.
       const install = installCommand(project.dir);
@@ -797,11 +815,13 @@ async function cmdProjectAction(action, argv) {
   }
 
   // sync = pull the built code down from the remote (fast-forward only, so it
-  // never rewrites local work). Not a detected command.
+  // never rewrites local work). Not a detected command. Only TRACKED edits
+  // block a fast-forward — an untracked deploy cache does not, so don't refuse
+  // over it.
   let command;
   if (action === 'sync') {
     if (!project.git?.isRepo) throw new Error(`${project.name} is not a git repository — nothing to update.`);
-    if (project.git.dirty) throw new Error(`${project.name} has uncommitted changes — commit or stash them before updating.`);
+    if (project.git.trackedDirty) throw new Error(`${project.name} has uncommitted edits to tracked files — commit or stash them before updating (or run build/publish, which stashes and restores them for you).`);
     command = 'git pull --ff-only';
   } else {
     const act = project.actions.find((a) => a.id === action);

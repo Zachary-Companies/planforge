@@ -137,6 +137,42 @@ test('a scaffold-only checkout behind its remote is syncable with a helpful hint
   assert.match(r.hint, /behind the remote/);
 });
 
+test('an untracked deploy cache does NOT make a behind checkout unsyncable', () => {
+  const remote = mkdtempSync(join(tmpdir(), 'pf-remote-unt-'));
+  sp('git', ['-C', remote, 'init', '--bare', '-b', 'main']);
+  const { dir, g } = gitProj();
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'vite build' } }));
+  g('add', '-A'); g('commit', '-m', 'app');
+  g('remote', 'add', 'origin', remote);
+  g('push', '-u', 'origin', 'main');
+  // remote advances; local falls behind
+  const work = mkdtempSync(join(tmpdir(), 'pf-work-unt-'));
+  const gw = (...a) => sp('git', ['-C', work, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+  sp('git', ['clone', remote, work]);
+  writeFileSync(join(work, 'FEATURE.md'), 'shipped');
+  gw('add', '-A'); gw('commit', '-m', 'feature'); gw('push', 'origin', 'main');
+  g('fetch', 'origin');
+  // an untracked deploy cache sits in the working tree
+  mkdirSync(join(dir, '.firebase'), { recursive: true });
+  writeFileSync(join(dir, '.firebase', 'hosting.cache'), 'x');
+
+  const r = detectProjectActions(dir);
+  assert.ok(r.git.behind >= 1);
+  assert.equal(r.git.dirty, true, 'untracked file still shows in the raw dirty flag');
+  assert.equal(r.git.trackedDirty, false, 'but no TRACKED edits');
+  assert.equal(r.syncable, true, 'so the folder is still syncable / Update stays available');
+});
+
+test('an edit to a tracked file DOES block syncing (trackedDirty)', () => {
+  const { dir, g } = gitProj();
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'vite build' } }));
+  g('add', '-A'); g('commit', '-m', 'app');
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'vite build --edited' } }));
+  const r = detectProjectActions(dir);
+  assert.equal(r.git.trackedDirty, true);
+  assert.equal(r.syncable, false);
+});
+
 // ---- resource provisioning: detect backing services + a setup command ----
 test('firebase.json yields a provision action that sets up firestore + storage', () => {
   const dir = proj({
