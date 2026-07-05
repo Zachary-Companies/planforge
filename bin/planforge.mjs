@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, CONFIG_FILENAME, CONFIG_DEFAULTS } from '../core/config.mjs';
 import { agentInvocation } from '../core/providers.mjs';
 import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT, shellInvocation } from '../core/platform.mjs';
-import { detectProjectActions, installCommand, listProjects, localDirForRepo, refreshGitInfo, verifySteps } from '../core/project.mjs';
+import { detectProjectActions, installCommand, listProjects, localDirForRepo, postBuildPublishBlockers, refreshGitInfo, verifySteps } from '../core/project.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -91,6 +91,8 @@ Usage:
       (the pool merges to GitHub; sync pulls the built code down).
       build / publish / provision sync automatically first when the folder
       is behind the remote (pass --stale to skip and run the folder as-is).
+      A deploy-target publish also rebuilds first and refuses to ship a
+      bundle that was built with placeholder config.
       Override commands in planforge.config.json under "projects".
       The project name is optional when there is only one.
 
@@ -755,6 +757,26 @@ async function cmdProjectAction(action, argv) {
   // log with a misleading registry error.
   if (action === 'publish' && project.publishBlockers?.length) {
     throw new Error(`Publish would fail — fix this first:\n${project.publishBlockers.map((b) => `  • ${b.message}`).join('\n')}`);
+  }
+
+  // A deploy-target publish (firebase/vercel/netlify) uploads whatever was
+  // built LAST — which can be arbitrarily old, or built with placeholder
+  // config. Build fresh first, then vet the built output before it ships.
+  // Publishes that go through the project's own deploy script are left alone
+  // (the script owns its build).
+  if (action === 'publish') {
+    const publishAct = project.actions.find((a) => a.id === 'publish');
+    if (publishAct?.fromDeployTarget) {
+      const buildAct = project.actions.find((a) => a.id === 'build');
+      if (buildAct?.available) {
+        console.log(`${project.name}: building before publish — a deploy uploads the last build, not the source.\n`);
+        await runStep(buildAct.command);
+      }
+      const built = postBuildPublishBlockers(project.dir);
+      if (built.length) {
+        throw new Error(`Publish would ship a broken build — fix this first:\n${built.map((b) => `  • ${b.message}`).join('\n')}`);
+      }
+    }
   }
 
   // verify = run the project's own build + tests, stopping at the first

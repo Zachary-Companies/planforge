@@ -185,6 +185,59 @@ export function publishBlockers(dir) {
   return blockers;
 }
 
+// Every file under root with one of the extensions, depth-first, capped so a
+// huge node_modules-ish tree can't stall detection.
+function collectFiles(root, exts, cap = 60) {
+  const out = [];
+  const walk = (d) => {
+    if (out.length >= cap) return;
+    let entries = [];
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= cap) return;
+      const full = join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (exts.some((x) => e.name.endsWith(x))) out.push(full);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+// After a build, before a deploy: catch a bundle that was built with
+// placeholder config. A browser bundle that talks to Firebase Auth
+// (identitytoolkit.googleapis.com appears in the built JS) must carry a real
+// web API key ("AIza…" — Firebase web config is public by design), unless it
+// loads config at runtime from hosting's /__/firebase/init.js. A bundle with
+// neither was built from demo/emulator fallbacks (the VITE_*-style env vars
+// were missing at build time), and every sign-in on the live site fails as
+// "invalid API key". Returns [{ id, message }].
+export function postBuildPublishBlockers(dir) {
+  const blockers = [];
+  const fb = readJson(join(dir, 'firebase.json'));
+  if (!fb || typeof fb !== 'object' || !fb.hosting) return blockers;
+  const sites = Array.isArray(fb.hosting) ? fb.hosting : [fb.hosting];
+  for (const site of sites) {
+    const pub = site && typeof site === 'object' && typeof site.public === 'string' ? site.public : null;
+    if (!pub) continue;
+    const files = collectFiles(join(dir, pub), ['.js', '.html']);
+    let usesAuth = false; let hasKey = false; let autoInit = false;
+    for (const f of files) {
+      const body = readText(f);
+      if (body.includes('identitytoolkit.googleapis.com')) usesAuth = true;
+      if (/AIza[0-9A-Za-z_-]{35}/.test(body)) hasKey = true;
+      if (body.includes('/__/firebase/init')) autoInit = true;
+    }
+    if (usesAuth && !hasKey && !autoInit) {
+      blockers.push({
+        id: 'demo-firebase-config',
+        message: `The built bundle in ${pub}/ calls Firebase Auth but contains no Firebase web API key ("AIza…"), so it was built with demo/placeholder config — every sign-in on the live site would fail with an invalid API key. Put the real web config (it's public: see https://<site>.web.app/__/firebase/init.json or \`npx firebase-tools apps:sdkconfig web\`) in a COMMITTED build-time env file (e.g. web/.env.production — force-add it past a .env* gitignore), rebuild, and publish again.`,
+      });
+    }
+  }
+  return blockers;
+}
+
 // A deploy target we recognize by its config file → a ready-made publish command.
 // --force / --yes make the deploys non-interactive: without them the CLI tries
 // to prompt (e.g. Firebase's functions artifact cleanup policy) and exits
@@ -236,14 +289,14 @@ export function detectProjectActions(dir, overrides = {}) {
     if (buildScript) detected.build = { command: withInstall(pm.run(buildScript)), label: `Build (${pm.name} run build)` };
     const publishScript = firstScript(scripts, ['deploy', 'publish', 'release']);
     if (publishScript) detected.publish = { command: withInstall(pm.run(publishScript)), label: `Publish (${pm.name} ${publishScript})` };
-    else if (target) detected.publish = { command: target.command, label: target.label };
+    else if (target) detected.publish = { command: target.command, label: target.label, fromDeployTarget: true };
   } else if (isStatic) {
     detected.start = { command: 'npx --yes serve .', label: 'Start (serve static files)' };
-    if (target) detected.publish = { command: target.command, label: target.label };
+    if (target) detected.publish = { command: target.command, label: target.label, fromDeployTarget: true };
   }
   // A deploy target beats a same-named script only when there was no script;
   // but a target should still surface even for a Node project without one.
-  if (!detected.publish && target) detected.publish = { command: target.command, label: target.label };
+  if (!detected.publish && target) detected.publish = { command: target.command, label: target.label, fromDeployTarget: true };
 
   // Backing resources (db, storage, cache, infra) the app needs to run.
   const resources = detectResources(dir);
@@ -268,7 +321,7 @@ export function detectProjectActions(dir, overrides = {}) {
     }
     const d = detected[s.id];
     result.actions.push(d
-      ? { id: s.id, label: d.label, command: d.command, longRunning: s.longRunning, available: true, confirm: s.confirm }
+      ? { id: s.id, label: d.label, command: d.command, longRunning: s.longRunning, available: true, confirm: s.confirm, ...(d.fromDeployTarget ? { fromDeployTarget: true } : {}) }
       : { id: s.id, label: s.id[0].toUpperCase() + s.id.slice(1), command: null, longRunning: s.longRunning, available: false, reason: s.missing });
   }
 

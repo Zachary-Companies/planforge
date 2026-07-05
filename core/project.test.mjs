@@ -259,6 +259,59 @@ test('publishBlockers handles glob workspaces and multi-codebase functions array
   assert.match(b[0].message, /packages\/fns\/package\.json/);
 });
 
+// ---- postBuildPublishBlockers: a bundle built with placeholder config ----
+import { postBuildPublishBlockers } from './project.mjs';
+const REAL_KEY = 'AIzaSyD3WbXzIJx1qPD7wKjRBixqAcDRnBueWok';
+const hostingProj = (bundleBody) => proj({
+  'firebase.json': JSON.stringify({ hosting: { public: 'web/dist' } }),
+  'web/dist/index.html': '<script src="/assets/index.js"></script>',
+  'web/dist/assets/index.js': bundleBody,
+});
+
+test('a bundle that calls Firebase Auth without a real API key blocks the publish', () => {
+  const demo = hostingProj('fetch("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=demo-app")');
+  const b = postBuildPublishBlockers(demo);
+  assert.equal(b.length, 1);
+  assert.match(b[0].message, /no Firebase web API key/);
+  assert.match(b[0].message, /\.env\.production/);
+});
+
+test('a real key or hosting auto-init or no auth usage passes the post-build check', () => {
+  const real = hostingProj(`fetch("https://identitytoolkit.googleapis.com/v1/x?key=${REAL_KEY}")`);
+  assert.equal(postBuildPublishBlockers(real).length, 0);
+  // config fetched at runtime from Firebase Hosting's reserved URL
+  const autoInit = hostingProj('fetch("https://identitytoolkit.googleapis.com/v1/x?key="+k);load("/__/firebase/init.json")');
+  assert.equal(postBuildPublishBlockers(autoInit).length, 0);
+  // an app that never talks to Firebase Auth needs no key
+  const noAuth = hostingProj('console.log("static site")');
+  assert.equal(postBuildPublishBlockers(noAuth).length, 0);
+  // key can live in a different chunk than the auth call
+  const split = proj({
+    'firebase.json': JSON.stringify({ hosting: { public: 'dist' } }),
+    'dist/auth.js': 'fetch("https://identitytoolkit.googleapis.com/v1/x")',
+    'dist/config.js': `const key="${REAL_KEY}"`,
+  });
+  assert.equal(postBuildPublishBlockers(split).length, 0);
+  // no hosting config → nothing to vet
+  assert.equal(postBuildPublishBlockers(proj({ 'package.json': '{}' })).length, 0);
+});
+
+test('the detected deploy-target publish is tagged so the CLI builds first', () => {
+  const dir = proj({
+    'package.json': JSON.stringify({ scripts: { dev: 'vite', build: 'vite build' } }),
+    'node_modules/.keep': '',
+    'firebase.json': '{}',
+  });
+  const a = actionsById(detectProjectActions(dir));
+  assert.equal(a.publish.fromDeployTarget, true);
+  // a project's own deploy script is NOT tagged — the script owns its build
+  const scripted = proj({
+    'package.json': JSON.stringify({ scripts: { build: 'vite build', deploy: 'my-deploy' } }),
+    'node_modules/.keep': '',
+  });
+  assert.ok(!actionsById(detectProjectActions(scripted)).publish.fromDeployTarget);
+});
+
 // ---- verifySteps always reinstalls (repairs a corrupt node_modules) ----
 import { verifySteps } from './project.mjs';
 test('verifySteps always installs first, even when node_modules exists', () => {
