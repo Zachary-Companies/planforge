@@ -181,6 +181,84 @@ test('no infra config → provision unavailable with a helpful reason; override 
   assert.equal(overridden.provision.available, true);
 });
 
+// ---- refreshGitInfo fetches, so the behind-count is current pre-action ----
+import { refreshGitInfo } from './project.mjs';
+test('refreshGitInfo sees new remote commits without a prior local fetch', () => {
+  const remote = mkdtempSync(join(tmpdir(), 'pf-remote2-'));
+  sp('git', ['-C', remote, 'init', '--bare', '-b', 'main']);
+  const { dir, g } = gitProj();
+  g('remote', 'add', 'origin', remote);
+  g('push', '-u', 'origin', 'main');
+  // Another clone advances the remote; the first checkout never fetches.
+  const work = mkdtempSync(join(tmpdir(), 'pf-work2-'));
+  sp('git', ['clone', remote, work]);
+  const gw = (...a) => sp('git', ['-C', work, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+  writeFileSync(join(work, 'new.txt'), 'merged by the pool');
+  gw('add', '-A'); gw('commit', '-m', 'pool merge'); gw('push', 'origin', 'main');
+
+  const passive = detectProjectActions(dir);
+  assert.equal(passive.git.behind, 0, 'without a fetch the checkout looks current — the trap');
+  const fresh = refreshGitInfo(dir);
+  assert.ok(fresh.behind >= 1, 'refreshGitInfo fetches and exposes the real gap');
+  assert.equal(fresh.dirty, false);
+});
+
+// ---- publishBlockers: workspace deps Firebase's Cloud Build cannot install ----
+import { publishBlockers } from './project.mjs';
+const fbMonorepo = (functionsPkg) => proj({
+  'package.json': JSON.stringify({ name: 'root', workspaces: ['functions', 'shared', 'web'] }),
+  'firebase.json': JSON.stringify({ functions: { source: 'functions' }, hosting: {} }),
+  'functions/package.json': JSON.stringify(functionsPkg),
+  'shared/package.json': JSON.stringify({ name: '@app/shared', version: '0.1.0' }),
+  'web/package.json': JSON.stringify({ name: '@app/web', version: '0.1.0' }),
+});
+
+test('a functions dependency on a workspace sibling is a publish blocker (dev deps too)', () => {
+  const asDep = fbMonorepo({ name: '@app/functions', dependencies: { '@app/shared': '0.1.0', express: '^5.0.0' } });
+  const b1 = publishBlockers(asDep);
+  assert.equal(b1.length, 1);
+  assert.match(b1[0].message, /@app\/shared/);
+  assert.match(b1[0].message, /workspace package/);
+  // Cloud Build resolves devDependencies as well (npm install --package-lock-only).
+  const asDev = fbMonorepo({ name: '@app/functions', devDependencies: { '@app/shared': '0.1.0' } });
+  assert.equal(publishBlockers(asDev).length, 1);
+  // The blocker surfaces on the detection result the UI reads.
+  assert.equal(detectProjectActions(asDep).publishBlockers.length, 1);
+});
+
+test('vendored (file:) deps, non-member deps, and non-functions projects are not blockers', () => {
+  const vendored = fbMonorepo({ name: '@app/functions', dependencies: { '@app/shared': 'file:./app-shared-0.1.0.tgz' } });
+  assert.equal(publishBlockers(vendored).length, 0);
+  const clean = fbMonorepo({ name: '@app/functions', dependencies: { express: '^5.0.0' } });
+  assert.equal(publishBlockers(clean).length, 0);
+  // firebase.json without functions → nothing to check
+  const hostingOnly = proj({
+    'package.json': JSON.stringify({ name: 'root', workspaces: ['web'] }),
+    'firebase.json': JSON.stringify({ hosting: {} }),
+    'web/package.json': JSON.stringify({ name: '@app/web' }),
+  });
+  assert.equal(publishBlockers(hostingOnly).length, 0);
+  // no workspaces at all → nothing to check
+  const noWs = proj({
+    'package.json': JSON.stringify({ name: 'solo' }),
+    'firebase.json': JSON.stringify({ functions: { source: 'functions' } }),
+    'functions/package.json': JSON.stringify({ name: 'fns', dependencies: { express: '^5.0.0' } }),
+  });
+  assert.equal(publishBlockers(noWs).length, 0);
+});
+
+test('publishBlockers handles glob workspaces and multi-codebase functions arrays', () => {
+  const dir = proj({
+    'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+    'firebase.json': JSON.stringify({ functions: [{ source: 'packages/fns', codebase: 'default' }] }),
+    'packages/fns/package.json': JSON.stringify({ name: '@app/fns', dependencies: { '@app/lib': '1.0.0' } }),
+    'packages/lib/package.json': JSON.stringify({ name: '@app/lib', version: '1.0.0' }),
+  });
+  const b = publishBlockers(dir);
+  assert.equal(b.length, 1);
+  assert.match(b[0].message, /packages\/fns\/package\.json/);
+});
+
 // ---- verifySteps always reinstalls (repairs a corrupt node_modules) ----
 import { verifySteps } from './project.mjs';
 test('verifySteps always installs first, even when node_modules exists', () => {

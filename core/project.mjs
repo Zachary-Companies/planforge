@@ -9,8 +9,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-function git(dir, args) {
-  const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+function git(dir, args, opts = {}) {
+  const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
   return { code: r.status ?? -1, out: (r.stdout || '').trim() };
 }
 
@@ -31,6 +31,16 @@ function gitInfo(dir) {
   return { isRepo: true, branch, upstream, ahead, behind, dirty };
 }
 
+// Fetch the remote, then re-read git state. For the moment right before an
+// action that must see the latest merged code — the passive behind-count above
+// only reads the last-fetched ref, which can be arbitrarily stale if the pool
+// hasn't run lately. A failed fetch (offline, auth) degrades to that last
+// fetch instead of blocking.
+export function refreshGitInfo(dir) {
+  if (existsSync(join(dir, '.git'))) git(dir, ['fetch', '--quiet'], { timeout: 60000 });
+  return gitInfo(dir);
+}
+
 // Local folder a repo (or slug) checks out to under the workspace.
 export function localDirForRepo(repoOrSlug, workspace) {
   const name = String(repoOrSlug).includes('/') ? String(repoOrSlug).split('/').pop() : String(repoOrSlug);
@@ -47,6 +57,15 @@ function packageManager(dir) {
   if (existsSync(join(dir, 'yarn.lock'))) return { name: 'yarn', install: 'yarn install', run: (s) => `yarn ${s}` };
   if (existsSync(join(dir, 'bun.lockb'))) return { name: 'bun', install: 'bun install', run: (s) => `bun run ${s}` };
   return { name: 'npm', install: 'npm install', run: (s) => `npm run ${s}` };
+}
+
+// The project's install command ("npm install", "pnpm install", …), or null
+// for a non-Node project. Callers run it after a sync pulls new commits —
+// a pull can change dependencies out from under an existing node_modules.
+export function installCommand(dir) {
+  const pkg = readJson(join(dir, 'package.json'));
+  if (!pkg || typeof pkg !== 'object') return null;
+  return packageManager(dir).install;
 }
 
 // First matching script name present in package.json, or null.
@@ -109,6 +128,63 @@ function detectResources(dir) {
   return { needs, steps };
 }
 
+// Names of the npm-workspace member packages declared by the root package.json
+// (supports plain entries and trailing-star globs like "packages/*").
+function workspaceMemberNames(dir, rootPkg) {
+  const names = new Set();
+  const globs = Array.isArray(rootPkg?.workspaces) ? rootPkg.workspaces
+    : Array.isArray(rootPkg?.workspaces?.packages) ? rootPkg.workspaces.packages : [];
+  const memberDirs = [];
+  for (const g of globs) {
+    if (typeof g !== 'string') continue;
+    if (g.endsWith('/*')) {
+      const parent = join(dir, g.slice(0, -2));
+      let entries = [];
+      try { entries = readdirSync(parent); } catch { /* ignore */ }
+      for (const e of entries) memberDirs.push(join(parent, e));
+    } else {
+      memberDirs.push(join(dir, g));
+    }
+  }
+  for (const d of memberDirs) {
+    const pkg = readJson(join(d, 'package.json'));
+    if (pkg && typeof pkg.name === 'string' && pkg.name.trim()) names.add(pkg.name);
+  }
+  return names;
+}
+
+// Problems that make a publish fail in ways the deploy log explains badly —
+// caught here so the publish can refuse up front with the actual fix.
+// Today's one check: Firebase Functions uploads ONLY the functions source dir,
+// and its Cloud Build resolves every package.json dependency (dev deps too,
+// via `npm install --package-lock-only`) against the public npm registry — so
+// a dependency on a private workspace sibling 404s the whole functions deploy.
+// Returns [{ id, message }]; empty when the publish looks safe.
+export function publishBlockers(dir) {
+  const blockers = [];
+  const fb = readJson(join(dir, 'firebase.json'));
+  if (!fb || typeof fb !== 'object' || !fb.functions) return blockers;
+  const members = workspaceMemberNames(dir, readJson(join(dir, 'package.json')));
+  if (!members.size) return blockers;
+  const codebases = Array.isArray(fb.functions) ? fb.functions : [fb.functions];
+  for (const cb of codebases) {
+    const source = cb && typeof cb === 'object' && typeof cb.source === 'string' ? cb.source : 'functions';
+    const pkg = readJson(join(dir, source, 'package.json'));
+    if (!pkg || typeof pkg !== 'object') continue;
+    for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+      for (const [dep, spec] of Object.entries(pkg[section] && typeof pkg[section] === 'object' ? pkg[section] : {})) {
+        if (dep === pkg.name || !members.has(dep)) continue;
+        if (/^(file|link|portal):/.test(String(spec))) continue; // vendored inside the upload — Cloud Build can resolve it
+        blockers.push({
+          id: 'functions-workspace-dep',
+          message: `${source}/package.json lists "${dep}" (${section}) — a private workspace package. Firebase uploads only ${source}/, and its Cloud Build installs every listed dependency from the public npm registry, so the deploy 404s. If ${source} only uses its types (import type), delete the entry — tsc still resolves it through the workspace. If it needs it at runtime, npm-pack it into ${source}/ and depend on the tarball via "file:".`,
+        });
+      }
+    }
+  }
+  return blockers;
+}
+
 // A deploy target we recognize by its config file → a ready-made publish command.
 // --force / --yes make the deploys non-interactive: without them the CLI tries
 // to prompt (e.g. Firebase's functions artifact cleanup policy) and exits
@@ -129,7 +205,7 @@ function detectDeployTarget(dir) {
  */
 export function detectProjectActions(dir, overrides = {}) {
   const name = basename(dir);
-  const result = { name, dir, exists: existsSync(dir), kind: 'unknown', packageManager: null, needsInstall: false, git: { isRepo: false }, syncable: false, hint: null, resources: [], actions: [] };
+  const result = { name, dir, exists: existsSync(dir), kind: 'unknown', packageManager: null, needsInstall: false, git: { isRepo: false }, syncable: false, hint: null, resources: [], actions: [], publishBlockers: [] };
   if (!result.exists) return result;
 
   result.git = gitInfo(dir);
@@ -172,6 +248,7 @@ export function detectProjectActions(dir, overrides = {}) {
   // Backing resources (db, storage, cache, infra) the app needs to run.
   const resources = detectResources(dir);
   result.resources = resources.needs;
+  result.publishBlockers = publishBlockers(dir);
   if (resources.steps.length) {
     detected.provision = { command: withInstall(resources.steps.join(' && ')), label: 'Set up resources' };
   }

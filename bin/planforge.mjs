@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, CONFIG_FILENAME, CONFIG_DEFAULTS } from '../core/config.mjs';
 import { agentInvocation } from '../core/providers.mjs';
 import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT, shellInvocation } from '../core/platform.mjs';
-import { detectProjectActions, listProjects, localDirForRepo, verifySteps } from '../core/project.mjs';
+import { detectProjectActions, installCommand, listProjects, localDirForRepo, refreshGitInfo, verifySteps } from '../core/project.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -89,6 +89,8 @@ Usage:
       package.json scripts and deploy config (firebase.json, vercel.json,
       netlify.toml). "sync" fast-forwards the local folder to the remote
       (the pool merges to GitHub; sync pulls the built code down).
+      build / publish / provision sync automatically first when the folder
+      is behind the remote (pass --stale to skip and run the folder as-is).
       Override commands in planforge.config.json under "projects".
       The project name is optional when there is only one.
 
@@ -707,14 +709,53 @@ async function cmdProjects(argv) {
 async function cmdProjectAction(action, argv) {
   let configArg = null;
   let nameArg = null;
+  let stale = false;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--config') configArg = resolve(need(argv, ++i, '--config'));
+    else if (argv[i] === '--stale') stale = true;
     else if (!argv[i].startsWith('--')) nameArg = argv[i];
     else throw new Error(`Unknown option for ${action}: ${argv[i]}`);
   }
   const config = loadConfig(configArg || process.cwd());
-  const project = resolveProject(nameArg, config);
+  let project = resolveProject(nameArg, config);
   if (!project.exists) throw new Error(`Project folder not found: ${project.dir}`);
+
+  const runStep = (cmd) => {
+    const [b, a] = shellInvocation(cmd);
+    return new Promise((resolveP, rejectP) => {
+      spawn(b, a, { cwd: project.dir, stdio: 'inherit', env: process.env })
+        .on('error', (err) => rejectP(new Error(`Could not run "${cmd}": ${err.message}`)))
+        .on('close', (code) => (code === 0 ? resolveP() : rejectP(new Error(`"${cmd}" exited with code ${code}`))));
+    });
+  };
+
+  // Build/publish/provision must run against the latest merged code — the pool
+  // merges PRs on GitHub, and a checkout that was never pulled will happily
+  // build and deploy the OLD app (features "missing" in production, evals
+  // failing against it). Fetch for a current behind-count, fast-forward when
+  // clean, refuse (loudly) when local edits block the pull. --stale skips.
+  if (['build', 'publish', 'provision'].includes(action) && !stale && project.git?.isRepo && project.git.upstream) {
+    const fresh = refreshGitInfo(project.dir);
+    if (fresh.behind > 0) {
+      if (fresh.dirty) {
+        throw new Error(`${project.name} is ${fresh.behind} commit${fresh.behind === 1 ? '' : 's'} behind ${fresh.upstream}, but has uncommitted local changes, so it can't be fast-forwarded — a ${action} now would use stale code missing what the pool already merged. Commit or stash the local changes and retry, or pass --stale to ${action} the folder as-is.`);
+      }
+      console.log(`${project.name}: ${fresh.behind} commit${fresh.behind === 1 ? '' : 's'} behind ${fresh.upstream} — updating first so the ${action} uses the latest merged code.\n`);
+      await runStep('git pull --ff-only');
+      // The pull can change dependencies and even the detected commands
+      // (scripts, deploy config) — reinstall and re-detect before acting.
+      const install = installCommand(project.dir);
+      if (install) await runStep(install);
+      project = resolveProject(nameArg, config);
+    }
+  }
+
+  // Known publish landmines (e.g. a Firebase functions dependency Cloud Build
+  // can't install) fail here with the fix, not twenty minutes into a deploy
+  // log with a misleading registry error.
+  if (action === 'publish' && project.publishBlockers?.length) {
+    throw new Error(`Publish would fail — fix this first:\n${project.publishBlockers.map((b) => `  • ${b.message}`).join('\n')}`);
+  }
 
   // verify = run the project's own build + tests, stopping at the first
   // failure (no auto-repair — that's the pool's job during a run).

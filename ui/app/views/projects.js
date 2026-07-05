@@ -109,6 +109,13 @@ export function renderProjects(root, ctx) {
       banner.querySelector('.project-update')?.addEventListener('click', () => runAction('sync'));
     }
 
+    // Known publish landmines (from detection) — shown before anyone clicks
+    // Publish, since the deploy log's own error for these is misleading.
+    for (const b of p.publishBlockers || []) {
+      const note = h(`<div class="project-note project-note-warn"><span>⚠ Publish will fail: ${esc(b.message)}</span></div>`);
+      card.querySelector('.project-head').insertAdjacentElement('afterend', note);
+    }
+
     const runAction = async (action, { existingLogId = null } = {}) => {
       const meta = ACTION_META[action];
       logWrap.hidden = false;
