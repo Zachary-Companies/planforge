@@ -207,6 +207,78 @@ export function renderProjects(root, ctx) {
       actionsEl.appendChild(btn);
     }
 
+    // Report a problem — describe what's wrong, drop/paste screenshots, and
+    // the build pool gets the report (text + image paths) to fix it.
+    const reportToggle = h('<button class="btn project-btn project-report-toggle" title="Something broken on the live app? Describe it, attach screenshots, and send it to the build pool.">⚑ Report a problem</button>');
+    actionsEl.appendChild(reportToggle);
+    const panel = h(`<div class="project-report" hidden>
+      <textarea class="report-text" rows="3" maxlength="2500"
+        placeholder="What's wrong? What did you do, what happened, what did you expect? Paste any error text too."></textarea>
+      <div class="report-drop" tabindex="0">Drop screenshots here, paste from the clipboard, or click to choose
+        <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></div>
+      <div class="report-thumbs"></div>
+      <div class="report-foot">
+        <span class="dim report-hint">Screenshots help the pool see exactly what you see (up to 6).</span>
+        <button class="btn small primary report-send">Send to the build pool ▶</button>
+      </div>
+    </div>`);
+    card.querySelector('.project-log-wrap').insertAdjacentElement('beforebegin', panel);
+    reportToggle.addEventListener('click', () => { panel.hidden = !panel.hidden; if (!panel.hidden) panel.querySelector('.report-text').focus(); });
+
+    const shots = []; // { name, dataBase64, url }
+    const thumbsEl = panel.querySelector('.report-thumbs');
+    const renderThumbs = () => {
+      thumbsEl.innerHTML = '';
+      shots.forEach((s, i) => {
+        const t = h(`<span class="report-thumb"><img src="${s.url}" alt="${esc(s.name)}"><button title="Remove">×</button></span>`);
+        t.querySelector('button').addEventListener('click', () => { shots.splice(i, 1); renderThumbs(); });
+        thumbsEl.appendChild(t);
+      });
+    };
+    const addFiles = (files) => {
+      for (const f of files) {
+        if (!f || !/^image\//.test(f.type)) continue;
+        if (shots.length >= 6) { toast('Up to 6 screenshots per report', 'err'); break; }
+        if (f.size > 8_000_000) { toast(`${f.name || 'image'} is over 8 MB — skip or shrink it`, 'err'); continue; }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const url = String(reader.result);
+          shots.push({ name: f.name || 'screenshot.png', dataBase64: url.split(',')[1] || '', url });
+          renderThumbs();
+        };
+        reader.readAsDataURL(f);
+      }
+    };
+    const drop = panel.querySelector('.report-drop');
+    const fileInput = drop.querySelector('input[type=file]');
+    drop.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles([...(e.dataTransfer?.files || [])]); });
+    panel.addEventListener('paste', (e) => {
+      const files = [...(e.clipboardData?.files || [])].filter((f) => /^image\//.test(f.type));
+      if (files.length) { e.preventDefault(); addFiles(files); }
+    });
+
+    panel.querySelector('.report-send').addEventListener('click', async (e) => {
+      const text = panel.querySelector('.report-text').value.trim();
+      if (!text) { toast('Describe the problem first — the pool needs your words too', 'err'); return; }
+      e.target.disabled = true;
+      try {
+        const { id } = await apiPost(`/api/projects/${encodeURIComponent(p.name)}/report`, {
+          text,
+          ...(p.repo ? { repo: p.repo } : {}),
+          images: shots.map((s) => ({ name: s.name, dataBase64: s.dataBase64 })),
+        });
+        toast('Report sent — the build pool is on it');
+        window.location.hash = `#/runs/${encodeURIComponent(id)}`;
+      } catch (err) {
+        toast(err.message, 'err');
+        e.target.disabled = false;
+      }
+    });
+
     // Reconnect to an action already running (e.g. a dev server) after a reload.
     if (p.running) {
       runAction(p.running.action, { existingLogId: p.running.logId });

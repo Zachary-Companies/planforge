@@ -437,7 +437,7 @@ function renderUserRequests(userRequests) {
   const rows = userRequests
     .map((r) => `  - [${r.id}]${r.repo ? ` (repo ${r.repo})` : ''} ${r.text}`)
     .join('\n');
-  return `USER-REQUESTED TASKS — the user asked for these IN THIS RUN, in plain English. They take priority over plan work: turn each into a properly-scoped slice (YOU derive the id, title, paths, and rationale by inspecting the repo — the user has not scoped it) and include it in your next batch(es) before other plan work, unless it conflicts with in-flight work (defer it to a later batch, do not drop it). If a request names no repo, choose the repo it belongs in. On every slice derived from a request, add "fromRequest": "<the request id>" so the orchestrator can mark it handled:
+  return `USER-REQUESTED TASKS — the user asked for these IN THIS RUN, in plain English. They take priority over plan work: turn each into a properly-scoped slice (YOU derive the id, title, paths, and rationale by inspecting the repo — the user has not scoped it) and include it in your next batch(es) before other plan work, unless it conflicts with in-flight work (defer it to a later batch, do not drop it). If a request names no repo, choose the repo it belongs in. On every slice derived from a request, add "fromRequest": "<the request id>" so the orchestrator can mark it handled. If a request references files on disk (screenshots, logs, a report.md — absolute paths), READ them yourself when scoping, and copy those exact paths VERBATIM into the derived slice's "notes" so the builder can open them too:
 ${rows}
 
 `;

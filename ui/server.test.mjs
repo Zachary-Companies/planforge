@@ -429,6 +429,56 @@ test('POST /api/runs spawns PLANFORGE_RUN_CMD detached and adopts its run dir', 
   }
 });
 
+test('POST /api/projects/:name/report saves the report + screenshots and starts a run carrying them', async () => {
+  process.env.PLANFORGE_RUN_CMD = `"${process.execPath}" "${join(ws, 'stub-run-cmd.mjs')}"`;
+  try {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64');
+    const res = await fetch(`${base}/api/projects/demo-app/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Upload fails with storage/no-default-bucket when I add an image.',
+        repo: 'acme/demo-app',
+        images: [{ name: 'shot.png', dataBase64: png }],
+      }),
+    });
+    assert.equal(res.status, 200);
+    const { ok, id } = await res.json();
+    assert.equal(ok, true);
+
+    // the report + screenshot land in the workspace where builder agents can read them
+    const { readdirSync } = await import('node:fs');
+    const reportsRoot = join(ws, '.planforge', 'reports');
+    const dir = readdirSync(reportsRoot).filter((d) => d.startsWith('demo-app-')).sort().pop();
+    assert.ok(dir, 'report dir created');
+    const reportDir = join(reportsRoot, dir);
+    assert.match(readFileSync(join(reportDir, 'report.md'), 'utf8'), /no-default-bucket/);
+    assert.ok(existsSync(join(reportDir, 'screenshot-1.png')));
+
+    // the spawned run got the report as a user request, screenshot path included
+    const argv = JSON.parse(readFileSync(join(ws, '.planforge', 'runs', id, 'argv.json'), 'utf8'));
+    const at = argv.indexOf('--requests-file');
+    assert.ok(at >= 0, 'report became a --requests-file run');
+    const requests = JSON.parse(readFileSync(argv[at + 1], 'utf8'));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].repo, 'acme/demo-app');
+    assert.match(requests[0].text, /no-default-bucket/);
+    assert.ok(requests[0].text.includes(join(reportDir, 'screenshot-1.png')), 'screenshot path travels with the request');
+  } finally {
+    delete process.env.PLANFORGE_RUN_CMD;
+  }
+});
+
+test('POST /api/projects/:name/report rejects an empty description', async () => {
+  const res = await fetch(`${base}/api/projects/demo-app/report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ images: [] }),
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /describe the problem/i);
+});
+
 test('POST /api/runs validates numeric options', async () => {
   const res = await fetch(`${base}/api/runs`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workers: -3 }),

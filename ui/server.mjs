@@ -39,7 +39,7 @@ import {
   appendFileSync, closeSync, createWriteStream, existsSync, mkdirSync, openSync,
   readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, watch, writeFileSync,
 } from 'node:fs';
-import { dirname, extname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const UI_DIR = dirname(fileURLToPath(import.meta.url));
@@ -253,10 +253,10 @@ function readBody(req, limit = 2_000_000) {
   });
 }
 
-async function readJsonBody(req, res) {
+async function readJsonBody(req, res, limit = undefined) {
   let text;
   try {
-    text = await readBody(req);
+    text = await readBody(req, limit);
   } catch (err) {
     json(res, err.statusCode || 400, { error: err.message });
     return undefined;
@@ -874,6 +874,58 @@ async function startRun(res, ctx, body) {
   json(res, 200, { ok: true, id, pid: child.pid });
 }
 
+// POST /api/projects/:name/report { text, repo?, images: [{name?, dataBase64}] }
+// A user problem report: what's wrong in their words, plus screenshots. The
+// images are written into the workspace (builder agents read files, not HTTP
+// uploads), the whole report is kept as report.md for the record, and the
+// text + image paths become a user request the planner scopes into a slice.
+const REPORT_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const REPORT_MAX_IMAGES = 6;
+const REPORT_MAX_IMAGE_BYTES = 8_000_000;
+const REPORT_MAX_TEXT = 2500; // leaves room for the path list inside the 4000-char request cap
+
+async function reportProjectProblem(res, ctx, name, body) {
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (!text) { json(res, 400, { error: 'describe the problem in "text" — what happened, and what you expected' }); return; }
+  if (text.length > REPORT_MAX_TEXT) { json(res, 400, { error: `keep the description under ${REPORT_MAX_TEXT} characters` }); return; }
+  const images = Array.isArray(body.images) ? body.images : [];
+  if (images.length > REPORT_MAX_IMAGES) { json(res, 400, { error: `up to ${REPORT_MAX_IMAGES} screenshots per report` }); return; }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const reportDir = join(ctx.workspace, '.planforge', 'reports', `${name}-${stamp}`);
+  const saved = [];
+  const files = [];
+  for (let i = 0; i < images.length; i += 1) {
+    const img = images[i];
+    const b64 = img && typeof img.dataBase64 === 'string' ? img.dataBase64.replace(/^data:[^,]*,/, '') : '';
+    const buf = b64 ? Buffer.from(b64, 'base64') : Buffer.alloc(0);
+    if (!buf.length) { json(res, 400, { error: `screenshot ${i + 1} has no image data` }); return; }
+    if (buf.length > REPORT_MAX_IMAGE_BYTES) { json(res, 400, { error: `screenshot ${i + 1} is over ${Math.round(REPORT_MAX_IMAGE_BYTES / 1e6)} MB` }); return; }
+    const orig = typeof img.name === 'string' ? basename(img.name) : '';
+    const ext = REPORT_IMAGE_EXTS.has(extname(orig).toLowerCase()) ? extname(orig).toLowerCase() : '.png';
+    files.push({ file: join(reportDir, `screenshot-${i + 1}${ext}`), buf });
+  }
+  mkdirSync(reportDir, { recursive: true });
+  for (const f of files) { writeFileSync(f.file, f.buf); saved.push(f.file); }
+  writeFileSync(join(reportDir, 'report.md'), `${[
+    `# Problem report — ${name}`,
+    '',
+    `Reported: ${new Date().toISOString()}`,
+    ...(body.repo ? [`Repo: ${body.repo}`] : []),
+    '',
+    text,
+    ...(saved.length ? ['', 'Screenshots:', ...saved.map((p) => `- ${p}`)] : []),
+  ].join('\n')}\n`);
+
+  const shots = saved.length
+    ? `\n\nThe user attached screenshot${saved.length === 1 ? '' : 's'} of the problem, saved on this machine — READ these image files before scoping or building the fix, and copy these exact paths into the slice notes for the builder:\n${saved.map((p) => `- ${p}`).join('\n')}`
+    : '';
+  const requestText = `Bug report from the user for the "${name}" project — reproduce it, find the root cause, and fix it:\n\n${text}${shots}`;
+  await startRun(res, ctx, {
+    requests: [{ ...(typeof body.repo === 'string' && body.repo.trim() ? { repo: body.repo.trim() } : {}), text: requestText }],
+  });
+}
+
 function stopRun(res, ctx, id) {
   const runDir = join(ctx.runsRoot, id);
   if (!existsSync(runDir)) { json(res, 404, { error: `unknown run: ${id}` }); return; }
@@ -1346,6 +1398,16 @@ export function createRequestHandler(ctx, options, sseClients) {
       const name = decodeURIComponent(m[1]);
       if (!safeName(name)) { json(res, 400, { error: 'invalid project name' }); return; }
       stopProjectAction(res, ctx, name);
+    }],
+
+    // Problem report: text + screenshots → a build-pool run. The generous body
+    // limit covers up to 6 base64-encoded 8 MB images.
+    ['POST', /^\/api\/projects\/([^/]+)\/report$/, async (req, res, m) => {
+      const name = decodeURIComponent(m[1]);
+      if (!safeName(name)) { json(res, 400, { error: 'invalid project name' }); return; }
+      const body = await readJsonBody(req, res, 72_000_000);
+      if (body === undefined) return;
+      await reportProjectProblem(res, ctx, name, body);
     }],
 
     ['GET', /^\/api\/projects\/([^/]+)\/log\/([^/]+)$/, (req, res, m) => {
