@@ -214,6 +214,54 @@ test('--no-evals (args.evals=false) skips the acceptance eval phase', POOL, asyn
   rmSync(ws, { recursive: true, force: true });
 });
 
+// ---- live request inbox: a request dropped mid-run gets planned+built ----
+test('a request added to the run inbox mid-run is picked up without a restart', POOL, async () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'pf-inbox-'));
+  const built = [];
+  let sawInitial = false;
+
+  // Planner: builds the one seeded slice, then goes dry — UNTIL a request shows
+  // up in pendingRequests, which it turns into a slice tagged fromRequest.
+  const planSome = async ({ k, userRequests }) => {
+    await sleep(1);
+    if (!sawInitial) {
+      sawInitial = true;
+      return { slices: [{ id: 'seed', repo: 'o/a', title: 'seed', paths: ['src/seed.ts'], kind: 'feature' }], empty: false };
+    }
+    if (userRequests && userRequests.length) {
+      const r = userRequests[0];
+      return { slices: [{ id: `req-slice-${r.id}`, repo: 'o/a', title: r.text, paths: [`src/${r.id}.ts`], kind: 'feature', fromRequest: r.id }], empty: false };
+    }
+    return { slices: [], empty: true }; // dry until a request arrives
+  };
+  const runWorker = async ({ slice }) => {
+    built.push(slice.id);
+    // Once the seed has been built and the pool is idling dry, drop a request
+    // into the inbox — exactly what the server does when you "add a feature".
+    if (slice.id === 'seed') {
+      writeFileSync(join(runDir, 'inbox', 'r1.json'), JSON.stringify([{ id: 'live-1', repo: 'o/a', text: 'add a dark mode toggle' }]));
+    }
+    await sleep(1);
+    return { slice, ok: true };
+  };
+
+  const events = [];
+  await runPool({
+    args: makeArgs({ workers: 1, repos: ['o/a'], workspace: '/tmp/pf-inbox-ws', plansPath: '/tmp/pf-inbox-ws/plans', evals: false }),
+    runDir, roles, sliceBudget: 1, // deliberately tiny: the added request must raise it
+    emit: (t, d) => events.push([t, d]),
+    deps: { planSome, runWorker, mergeWorkerPrs: () => ['o/a#1'], runReconcile: async () => {} },
+  });
+
+  assert.ok(built.includes('seed'), 'the seeded slice built');
+  assert.ok(built.includes('req-slice-live-1'), 'the mid-run request was planned and built without a restart');
+  const added = events.find(([t]) => t === 'request-added');
+  assert.ok(added, 'request-added event emitted');
+  assert.equal(added[1].request, 'live-1');
+  assert.ok(events.some(([t, d]) => t === 'request-planned' && d.request === 'live-1'), 'the added request was marked planned');
+  rmSync(runDir, { recursive: true, force: true });
+});
+
 // ---- reconcile cadence fires and respects the plans-repo-busy guard ----
 test('reconcile cadence + plans-busy guard', POOL, async () => {
   const K = 2, every = 1, budget = 8; // reconcile every every*K = 2 merged slices

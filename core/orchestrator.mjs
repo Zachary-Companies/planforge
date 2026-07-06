@@ -1159,6 +1159,44 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   let dry = false;
   let planningPromise = null;
   let reconciling = false;
+
+  // Live request inbox: the server (or `planforge add`) drops request JSON here
+  // while the run is going, so features can be added WITHOUT waiting for the run
+  // to finish or starting a fresh one. Each drained request joins the planner's
+  // backlog, re-wakes a pool that had gone dry, and raises the slice budget so
+  // it can actually be built this run (the user explicitly asked for more work).
+  const inboxDir = join(runDir, 'inbox');
+  try { mkdirSync(inboxDir, { recursive: true }); } catch { /* best effort */ }
+  let requestCounter = pendingRequests.length;
+  function drainRequestInbox() {
+    let files = [];
+    try { files = readdirSync(inboxDir).filter((f) => f.endsWith('.json')).sort(); } catch { return 0; }
+    let added = 0;
+    for (const f of files) {
+      const p = join(inboxDir, f);
+      let parsed = null;
+      try { parsed = JSON.parse(readFileSync(p, 'utf8')); } catch { /* skip malformed */ }
+      try { rmSync(p, { force: true }); } catch { /* consumed regardless */ }
+      for (const r of Array.isArray(parsed) ? parsed : [parsed]) {
+        const text = String(r && r.text ? r.text : '').trim();
+        if (!text) continue;
+        requestCounter += 1;
+        const req = { id: (r && r.id) || `req-${requestCounter}`, repo: (r && r.repo) || null, text };
+        pendingRequests.push(req);
+        added += 1;
+        console.log(`Added user request [${req.id}] mid-run: ${text.slice(0, 120)}`);
+        emit('request-added', { request: req.id, repo: req.repo, text: text.slice(0, 200) });
+      }
+    }
+    if (added) {
+      // Un-dry the pool and give it budget headroom for the new work.
+      dry = false;
+      emptyPlans = 0;
+      sliceBudget += added;
+      emitStats();
+    }
+    return added;
+  }
   let failedCount = 0;
   // Feature slices a worker actually built ok this run — the scope for the
   // end-of-run acceptance evals (we prove what THIS run produced, not the whole
@@ -1308,6 +1346,14 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // A cancelable timer waiter: resolves to `value` after ms, but cancel() clears
+  // the timer so a finished worker doesn't leave a pending timeout holding the
+  // event loop open after the loop exits.
+  const timerTick = (ms, value) => {
+    let handle;
+    const promise = new Promise((r) => { handle = setTimeout(() => r(value), ms); });
+    return { promise, cancel: () => clearTimeout(handle) };
+  };
   // Fix lane has work (or might, until a scan confirms otherwise).
   // A verify-only run does no planning/building or fix-lane work — it goes
   // straight to the verify-and-repair phase below.
@@ -1424,7 +1470,9 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   if (args.verifyOnly) dry = true;
 
   const PLAN_TICK = Symbol('plan-done');
-  while (active.size > 0 || ready.length > 0 || (!dry && launchedCount < sliceBudget) || fixAlive()) {
+  const INBOX_TICK = Symbol('inbox-tick');
+  const INBOX_POLL_MS = 4000;
+  while (drainRequestInbox(), active.size > 0 || ready.length > 0 || (!dry && launchedCount < sliceBudget) || fixAlive()) {
     maybeResyncProviders(); // re-select if a cooled-down provider recovered
     scanFixables(false); // throttled GitHub rescan -> fixReady
     launchFixes();       // dispatch fix-workers up to fixCap
@@ -1445,13 +1493,21 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
         continue;
       }
       if (fixAlive()) { await sleep(2000); continue; } // builds done; let fixes settle/re-scan
+      // Last look at the inbox before finishing — a request that landed just as
+      // the pool went dry still gets picked up rather than lost to a race.
+      if (drainRequestInbox() > 0) continue;
       break; // build dry AND fix dry
     }
 
-    // Wake on the FIRST of: a worker finishing, or a background plan completing.
-    const waiters = [...active.values()];
+    // Wake on the FIRST of: a worker finishing, a background plan completing, or
+    // the inbox poll (so a request added mid-build is picked up within seconds,
+    // not only when the current slice happens to finish).
+    const inboxTimer = timerTick(INBOX_POLL_MS, INBOX_TICK);
+    const waiters = [...active.values(), inboxTimer.promise];
     if (planningPromise) waiters.push(planningPromise.then(() => PLAN_TICK));
     const settled = await Promise.race(waiters);
+    inboxTimer.cancel();
+    if (settled === INBOX_TICK) continue;
     if (settled === PLAN_TICK) continue;
 
     const { slotId, result } = settled;

@@ -42,6 +42,10 @@ function eventLine(e) {
       return `verify ${shortRepo(e.repo)} — stopped (${e.reason}); left for a follow-up run`;
     case 'verify-failed':
       return `verify ${shortRepo(e.repo)} — still failing after repair attempts`;
+    case 'request-added':
+      return `＋ added mid-run: ${e.text || e.request}`;
+    case 'request-planned':
+      return `request ${e.request} → slice ${e.sliceId}`;
     case 'evals-start':
       return `acceptance evals ${shortRepo(e.repo)} — proving ${e.slices} feature${e.slices === 1 ? '' : 's'} built this run`;
     case 'eval-start':
@@ -79,7 +83,7 @@ function eventClass(e) {
   if (e.type === 'evals-start' || e.type === 'eval-start') return 'plan';
   if (e.type === 'evals-skip') return 'warn';
   if (e.type === 'provider-switch') return 'provider';
-  if (e.type === 'seed-slices') return 'seed';
+  if (e.type === 'seed-slices' || e.type === 'request-added') return 'seed';
   if (e.type === 'plan-result' && e.status === 'saturated') return 'warn';
   if (e.type === 'run-start' || e.type === 'run-done') return 'ok';
   return 'plan';

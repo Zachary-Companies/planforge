@@ -18,6 +18,7 @@
 //   POST /api/runs                spawn `planforge run …` detached, return run id
 //   GET  /api/runs/:id/events     SSE: replay events.ndjson from byte 0, then tail
 //   POST /api/runs/:id/stop       SIGTERM the recorded pid
+//   POST /api/runs/:id/requests   add a plain-English request to a live run's inbox
 //   GET  /api/projects            scaffolded projects + detected/available actions
 //   POST /api/projects/:n/action  start|build|publish (spawns the CLI detached)
 //   GET  /api/projects/:n/log/:id SSE tail of an action's log (ends on @exit)
@@ -926,6 +927,41 @@ async function reportProjectProblem(res, ctx, name, body) {
   });
 }
 
+// POST /api/runs/:id/requests { text, repo? } — drop a plain-English request
+// into a RUNNING run's inbox, so a feature can be added without waiting for the
+// run to finish or starting a new one. The orchestrator drains this dir each
+// loop pass, plans it, and raises its slice budget to build it.
+function addRunRequest(res, ctx, id, body) {
+  const runDir = join(ctx.runsRoot, id);
+  if (!existsSync(runDir)) { json(res, 404, { error: `unknown run: ${id}` }); return; }
+  const text = typeof body?.text === 'string' ? body.text.trim() : '';
+  if (!text) { json(res, 400, { error: 'describe the feature/fix to add in "text"' }); return; }
+  if (text.length > 4000) { json(res, 400, { error: 'keep the request under 4000 characters' }); return; }
+  if (body.repo !== undefined && body.repo !== null && body.repo !== '' && typeof body.repo !== 'string') {
+    json(res, 400, { error: 'request "repo" must be a string when given' }); return;
+  }
+  const pids = readPids(runDir);
+  if (!pids || !Number.isInteger(pids.pid) || !pidAlive(pids.pid)) {
+    json(res, 409, { error: 'this run is not active — start a new run (or use "Report a problem") instead' });
+    return;
+  }
+  const inboxDir = join(runDir, 'inbox');
+  try { mkdirSync(inboxDir, { recursive: true }); } catch { /* orchestrator also creates it */ }
+  const reqId = `ui-${Date.now().toString(36)}`;
+  const item = { id: reqId, ...(typeof body.repo === 'string' && body.repo.trim() ? { repo: body.repo.trim() } : {}), text };
+  try {
+    // Write to a temp name then rename, so the orchestrator never reads a
+    // half-written file mid-append.
+    const tmp = join(inboxDir, `.${reqId}.json.tmp`);
+    writeFileSync(tmp, `${JSON.stringify([item], null, 2)}\n`);
+    renameSync(tmp, join(inboxDir, `${reqId}.json`));
+  } catch (err) {
+    json(res, 500, { error: `could not add the request: ${err.message}` });
+    return;
+  }
+  json(res, 200, { ok: true, id, requestId: reqId });
+}
+
 function stopRun(res, ctx, id) {
   const runDir = join(ctx.runsRoot, id);
   if (!existsSync(runDir)) { json(res, 404, { error: `unknown run: ${id}` }); return; }
@@ -1382,6 +1418,14 @@ export function createRequestHandler(ctx, options, sseClients) {
       const id = decodeURIComponent(m[1]);
       if (!safeName(id)) { json(res, 400, { error: 'invalid run id' }); return; }
       stopRun(res, ctx, id);
+    }],
+
+    ['POST', /^\/api\/runs\/([^/]+)\/requests$/, async (req, res, m) => {
+      const id = decodeURIComponent(m[1]);
+      if (!safeName(id)) { json(res, 400, { error: 'invalid run id' }); return; }
+      const body = await readJsonBody(req, res);
+      if (body === undefined) return;
+      addRunRequest(res, ctx, id, body);
     }],
 
     ['GET', /^\/api\/projects$/, (req, res) => listProjectsEndpoint(res, ctx)],

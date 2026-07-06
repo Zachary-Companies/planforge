@@ -493,6 +493,47 @@ test('POST /api/runs/:id/stop reports when no live pid is tracked', async () => 
   assert.equal(unknown.status, 404);
 });
 
+test('POST /api/runs/:id/requests drops a request into a live run inbox', async () => {
+  const { readdirSync, writeFileSync } = await import('node:fs');
+  const runDir = join(ws, '.planforge', 'runs', FIXTURE_RUN_ID);
+
+  // no pid recorded → the run is not active → 409, nothing written
+  const inactive = await fetch(`${base}/api/runs/${FIXTURE_RUN_ID}/requests`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'add dark mode' }),
+  });
+  assert.equal(inactive.status, 409);
+
+  // record THIS test process as the run's live pid, then it should accept
+  writeFileSync(join(runDir, 'pids.json'), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+  try {
+    const empty = await fetch(`${base}/api/runs/${FIXTURE_RUN_ID}/requests`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '   ' }),
+    });
+    assert.equal(empty.status, 400, 'blank text is rejected');
+
+    const ok = await fetch(`${base}/api/runs/${FIXTURE_RUN_ID}/requests`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'add a dark mode toggle', repo: 'acme/demo-app' }),
+    });
+    assert.equal(ok.status, 200);
+    const { requestId } = await ok.json();
+    assert.ok(requestId);
+
+    const inbox = readdirSync(join(runDir, 'inbox')).filter((f) => f.endsWith('.json'));
+    assert.equal(inbox.length, 1, 'one request file landed in the inbox');
+    const written = JSON.parse(readFileSync(join(runDir, 'inbox', inbox[0]), 'utf8'));
+    assert.equal(written[0].text, 'add a dark mode toggle');
+    assert.equal(written[0].repo, 'acme/demo-app');
+  } finally {
+    rmSync(join(runDir, 'pids.json'), { force: true });
+    rmSync(join(runDir, 'inbox'), { recursive: true, force: true });
+  }
+
+  const unknown = await fetch(`${base}/api/runs/2020-01-01T00-00-00-000Z/requests`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'x' }),
+  });
+  assert.equal(unknown.status, 404);
+});
+
 test('GET /api/providers proxies planforge doctor --json via PLANFORGE_DOCTOR_CMD', async () => {
   const DOCTOR_STUB = `
 const report = {

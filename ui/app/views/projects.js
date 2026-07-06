@@ -209,21 +209,37 @@ export function renderProjects(root, ctx) {
 
     // Report a problem — describe what's wrong, drop/paste screenshots, and
     // the build pool gets the report (text + image paths) to fix it.
-    const reportToggle = h('<button class="btn project-btn project-report-toggle" title="Something broken on the live app? Describe it, attach screenshots, and send it to the build pool.">⚑ Report a problem</button>');
+    const reportToggle = h('<button class="btn project-btn project-report-toggle" title="Report a bug or ask for a feature. Describe it (attach screenshots for bugs) and send it to the build pool — you can add to a run that is already going.">⚑ Report / add a feature</button>');
     actionsEl.appendChild(reportToggle);
     const panel = h(`<div class="project-report" hidden>
       <textarea class="report-text" rows="3" maxlength="2500"
-        placeholder="What's wrong? What did you do, what happened, what did you expect? Paste any error text too."></textarea>
+        placeholder="Describe a bug OR a feature to add. For a bug: what you did, what happened, what you expected (paste any error text). For a feature: what it should do."></textarea>
       <div class="report-drop" tabindex="0">Drop screenshots here, paste from the clipboard, or click to choose
         <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></div>
       <div class="report-thumbs"></div>
       <div class="report-foot">
         <span class="dim report-hint">Screenshots help the pool see exactly what you see (up to 6).</span>
+        <button class="btn small report-add-live" hidden>＋ Add to the running build ▶</button>
         <button class="btn small primary report-send">Send to the build pool ▶</button>
       </div>
     </div>`);
     card.querySelector('.project-log-wrap').insertAdjacentElement('beforebegin', panel);
     reportToggle.addEventListener('click', () => { panel.hidden = !panel.hidden; if (!panel.hidden) panel.querySelector('.report-text').focus(); });
+
+    // If a run is already going for this repo, offer to add the request to it
+    // (built this run, no waiting) instead of only starting a fresh run.
+    const addLiveBtn = panel.querySelector('.report-add-live');
+    let liveRunId = null;
+    const findLiveRun = async () => {
+      if (!p.repo) return;
+      try {
+        const runs = await apiGet('/api/runs');
+        const live = (runs || []).find((r) => (r.status === 'running' || r.pidAlive) && (r.runStart?.repos || []).includes(p.repo));
+        liveRunId = live ? live.id : null;
+        addLiveBtn.hidden = !liveRunId;
+      } catch { /* leave the add-to-live button hidden */ }
+    };
+    reportToggle.addEventListener('click', () => { if (!panel.hidden) void findLiveRun(); });
 
     const shots = []; // { name, dataBase64, url }
     const thumbsEl = panel.querySelector('.report-thumbs');
@@ -276,6 +292,24 @@ export function renderProjects(root, ctx) {
       } catch (err) {
         toast(err.message, 'err');
         e.target.disabled = false;
+      }
+    });
+
+    addLiveBtn.addEventListener('click', async (e) => {
+      const text = panel.querySelector('.report-text').value.trim();
+      if (!text) { toast('Describe the feature/fix to add first', 'err'); return; }
+      if (!liveRunId) { toast('No run is active anymore — use "Send to the build pool"', 'err'); await findLiveRun(); return; }
+      e.target.disabled = true;
+      try {
+        // The inbox path is text-only; screenshots go through a fresh report run.
+        if (shots.length) toast('Screenshots are only sent with a new run — adding your text to the running build', 'warn');
+        await apiPost(`/api/runs/${encodeURIComponent(liveRunId)}/requests`, { text, ...(p.repo ? { repo: p.repo } : {}) });
+        toast('Added to the running build — it will plan and build this without a restart');
+        window.location.hash = `#/runs/${encodeURIComponent(liveRunId)}`;
+      } catch (err) {
+        toast(err.message, 'err');
+        e.target.disabled = false;
+        void findLiveRun(); // the run may have just finished
       }
     });
 

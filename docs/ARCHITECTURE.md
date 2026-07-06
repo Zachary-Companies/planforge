@@ -76,6 +76,8 @@ stdout prefixed `@event `. Event shapes (stable, additive-only):
 { "t": <ms>, "type": "plan-start",     "tag": "s001", "want": 2 }
 { "t": <ms>, "type": "plan-result",    "tag": "s001", "status": "queued|empty|saturated|provider-switch", "queued": 2, "ids": [...] }
 { "t": <ms>, "type": "seed-slices",    "count": 3, "ids": [...] }
+{ "t": <ms>, "type": "request-added",  "request": "ui-abc", "repo": "owner/repo", "text": "add a dark mode toggle" }
+{ "t": <ms>, "type": "request-planned","request": "ui-abc", "sliceId": "..." }
 { "t": <ms>, "type": "launch",         "slot": 1, "sliceId": "...", "repo": "...", "title": "...", "kind": "feature|refactor|fix", "index": 4, "budget": 12 }
 { "t": <ms>, "type": "worker-done",    "slot": 1, "sliceId": "...", "ok": true, "branch": "worker-1/..." }
 { "t": <ms>, "type": "merge",          "label": "...", "merged": ["owner/repo#12"] }
@@ -88,6 +90,11 @@ stdout prefixed `@event `. Event shapes (stable, additive-only):
 { "t": <ms>, "type": "stats",          "launched": 4, "budget": 12, "inFlight": 2, "queued": 1, "mergedPrs": 3, "mergedSlices": 3, "failed": 0, "fixing": 0, "fixQueued": 0, "fixed": 1, "dry": false, "elapsedMs": 12345 }
 { "t": <ms>, "type": "run-done",       "launched": 12, "mergedPrs": 10, "failed": 1, "fixed": 2, "evalsFailed": 1 }
 ```
+
+Features can be added to a run WHILE it is going: `POST /api/runs/:id/requests`
+(or a file dropped in `<runDir>/inbox/`) is drained by the orchestrator each
+loop pass, planned into a slice, and built — the pool re-wakes if it had gone
+dry and raises its slice budget for the new work. No restart, no waiting.
 
 The UI server tails `events.ndjson` and re-emits over Server-Sent Events at
 `GET /api/runs/:id/events`. The UI never imports core code — it spawns
