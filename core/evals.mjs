@@ -71,6 +71,30 @@ export function verdictPath(logDir, sliceId) {
   return join(logDir, `${String(sliceId).replace(/[^\w.-]/g, '_')}.verdict.json`);
 }
 
+// Acceptance criteria for a slice that is NOT in the plan document — a
+// planner-derived user request or an ad-hoc fix. These previously slipped
+// through the eval gate entirely ("no acceptance criteria in the plan" →
+// skip → the run claims success on a fix that never worked). The slice's own
+// description IS its acceptance: the evaluator must prove the described
+// change/fix actually behaves correctly end-to-end.
+export function criteriaFromSlice(slice) {
+  const parts = [];
+  if (slice.title) parts.push(String(slice.title));
+  if (slice.rationale) parts.push(String(slice.rationale));
+  if (slice.notes) parts.push(String(slice.notes));
+  const description = parts.join('\n').trim();
+  if (!description) return null;
+  return {
+    id: slice.id,
+    title: slice.title || slice.id,
+    status: null,
+    synthesized: true,
+    criteria: [
+      `The change this slice describes actually works end-to-end (derive the concrete checks from the description and PROVE each by execution — if it fixes a bug, demonstrate the bug no longer reproduces):\n${description}`,
+    ],
+  };
+}
+
 // The evaluator prompt: skeptical, evidence-driven, and self-contained. It
 // tells the agent to prove each criterion by execution (not by reading code),
 // add a repeatable test for anything uncovered, and write a strict verdict.

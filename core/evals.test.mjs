@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseAcceptanceCriteria,
+  criteriaFromSlice,
   buildEvalPrompt,
   parseVerdict,
   readVerdict,
@@ -63,6 +64,25 @@ test('parseAcceptanceCriteria handles em dash, en dash, and hyphen separators', 
   ].join('\n');
   const ids = parseAcceptanceCriteria(md).map((s) => s.id).sort();
   assert.deepEqual(ids, ['a-slice', 'b-slice', 'c-slice']);
+});
+
+test('criteriaFromSlice synthesizes acceptance for slices the plan does not cover', () => {
+  // a planner-derived user request: not in the plan document, but MUST still be evaluated
+  const s = criteriaFromSlice({
+    id: 'gallery-navigation-fix',
+    title: 'Fix gallery next/back image disappearance',
+    rationale: 'user reported images turn white when navigating',
+    notes: 'clicking next/prev makes portraits render white',
+  });
+  assert.equal(s.id, 'gallery-navigation-fix');
+  assert.equal(s.synthesized, true);
+  assert.equal(s.criteria.length, 1);
+  assert.match(s.criteria[0], /works end-to-end/);
+  assert.match(s.criteria[0], /no longer reproduces/);
+  assert.match(s.criteria[0], /images turn white/);
+
+  // a slice with no description at all cannot be evaluated
+  assert.equal(criteriaFromSlice({ id: 'bare' }), null);
 });
 
 test('buildEvalPrompt embeds criteria, the verdict path, and the independence framing', () => {

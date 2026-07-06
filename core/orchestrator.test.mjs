@@ -141,19 +141,26 @@ test('acceptance evals run for built slices and surface failures in run-done', P
   let launched = 0;
   const planSome = async ({ k }) => {
     await sleep(1);
-    if (launched >= 2) return { slices: [], empty: true };
-    const ids = ['feat-good', 'feat-bad'];
-    const slices = ids.slice(launched, launched + k).map((id) => {
-      launched += 1;
-      return { id, repo: 'o/a', title: id, paths: [`src/${id}.ts`], kind: 'feature' };
-    });
+    if (launched >= 3) return { slices: [], empty: true };
+    // feat-good/feat-bad are in the plan; request-fix is a planner-derived
+    // user request that is NOT in the plan (the "planforge said it succeeded"
+    // hole: these must be evaluated too, via synthesized criteria).
+    const all = [
+      { id: 'feat-good', repo: 'o/a', title: 'feat-good', paths: ['src/feat-good.ts'], kind: 'feature' },
+      { id: 'feat-bad', repo: 'o/a', title: 'feat-bad', paths: ['src/feat-bad.ts'], kind: 'feature' },
+      { id: 'request-fix', repo: 'o/a', title: 'Fix white images', paths: ['src/nav.ts'], kind: 'feature', notes: 'user: images turn white when navigating', fromRequest: 'req-1' },
+    ];
+    const slices = all.slice(launched, launched + k);
+    launched += slices.length;
     return { slices, empty: false };
   };
   const runWorker = async ({ slice }) => { await sleep(1); return { slice, ok: true }; };
 
-  // injected evaluator: pass feat-good, fail feat-bad (writes the verdict file)
+  // injected evaluator: pass feat-good and request-fix, fail feat-bad
+  const evaluated = [];
   const evalRunner = async (slice, { verdictFile }) => {
-    const pass = slice.id === 'feat-good';
+    evaluated.push(slice.id);
+    const pass = slice.id !== 'feat-bad';
     writeFileSync(verdictFile, JSON.stringify({
       sliceId: slice.id,
       status: pass ? 'pass' : 'fail',
@@ -173,15 +180,17 @@ test('acceptance evals run for built slices and surface failures in run-done', P
 
   const started = events.find(([t]) => t === 'evals-start');
   assert.ok(started, 'evals-start emitted for the repo');
-  assert.equal(started[1].slices, 2, 'both built slices evaluated');
+  assert.equal(started[1].slices, 3, 'plan slices AND the ad-hoc request slice are evaluated');
+  assert.ok(evaluated.includes('request-fix'), 'the not-in-plan request slice went through the eval gate');
   const done = events.find(([t]) => t === 'evals-done');
-  assert.equal(done[1].passed, 1);
+  assert.equal(done[1].passed, 2);
   assert.equal(done[1].failed, 1);
   assert.deepEqual(done[1].failedSlices, ['feat-bad']);
   const runDone = events.find(([t]) => t === 'run-done');
   assert.equal(runDone[1].evalsFailed, 1, 'run-done carries the unverified count');
   // per-slice verdict files were written under the run dir
   assert.ok(existsSync(join(runDir, 'evals', 'a', 'feat-good.verdict.json')));
+  assert.ok(existsSync(join(runDir, 'evals', 'a', 'request-fix.verdict.json')));
   rmSync(ws, { recursive: true, force: true });
   rmSync(runDir, { recursive: true, force: true });
 });

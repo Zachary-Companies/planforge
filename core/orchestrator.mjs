@@ -62,7 +62,7 @@ import {
 } from './providers.mjs';
 import { pathContains, shellInvocation } from './platform.mjs';
 import { verifySteps } from './project.mjs';
-import { parseAcceptanceCriteria, runAcceptanceEvals, makeAgentEvaluator } from './evals.mjs';
+import { parseAcceptanceCriteria, criteriaFromSlice, runAcceptanceEvals, makeAgentEvaluator } from './evals.mjs';
 
 // Run a project's verify steps (install → build → test) in its checkout,
 // stopping at the first failure. Returns { ok } or { ok:false, failedStep,
@@ -1162,8 +1162,10 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   let failedCount = 0;
   // Feature slices a worker actually built ok this run — the scope for the
   // end-of-run acceptance evals (we prove what THIS run produced, not the whole
-  // plan, to keep the cost bounded).
-  const builtSlices = new Map(); // repo -> Set(sliceId)
+  // plan, to keep the cost bounded). Full slice objects: an ad-hoc slice (a
+  // planner-derived user request) is not in the plan document, so its eval
+  // criteria are synthesized from the slice itself.
+  const builtSlices = new Map(); // repo -> Map(sliceId -> slice)
   const pendingReconciles = [];
   // Fix-lane state. fixInFlight: slotId -> item being fixed; fixReady: discovered
   // fixable PRs awaiting a slot; fixAttempts: per-PR try count; fixDry: last scan
@@ -1487,8 +1489,8 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
     }
     reactToWorkerLog(result); // demote a provider that hit a limit
     if (result.ok && slice?.id && slice?.repo && slice.kind !== 'fix' && slice.kind !== 'refactor') {
-      if (!builtSlices.has(slice.repo)) builtSlices.set(slice.repo, new Set());
-      builtSlices.get(slice.repo).add(slice.id);
+      if (!builtSlices.has(slice.repo)) builtSlices.set(slice.repo, new Map());
+      builtSlices.get(slice.repo).set(slice.id, slice);
     }
     emit('worker-done', { slot: slotId, sliceId: slice?.id, ok: !!result.ok, branch: result.branch || null, repo: slice?.repo, kind: slice?.kind, ms: buildMs, reason: result.reason });
     emitStats();
@@ -1593,13 +1595,24 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
     catch (e) { console.warn(`Skipping acceptance evals: ${e.message}`); emit('evals-skip', { reason: e.message }); }
   }
   if (args.evals !== false && builtSlices.size && evalRunner) {
-    for (const [repo, idSet] of builtSlices) {
+    for (const [repo, builtById] of builtSlices) {
       const planFile = join(args.plansPath || '', `${repo.split('/').pop()}-build-plan.md`);
       let planMd = '';
       try { planMd = readFileSync(planFile, 'utf8'); } catch { /* no plan */ }
-      if (!planMd) { emit('evals-skip', { repo, reason: 'no plan file' }); continue; }
-      const slices = parseAcceptanceCriteria(planMd).filter((s) => idSet.has(s.id));
-      if (!slices.length) { emit('evals-skip', { repo, reason: 'built slices have no acceptance criteria in the plan' }); continue; }
+      // Plan criteria where they exist; for any built slice the plan does not
+      // cover (a planner-derived user request, an ad-hoc slice), synthesize
+      // criteria from the slice itself — NO built slice ever skips the gate,
+      // which is how "fixed it" could get claimed for a fix that never worked.
+      const planCriteria = new Map(parseAcceptanceCriteria(planMd).map((s) => [s.id, s]));
+      const slices = [];
+      for (const [id, builtSlice] of builtById) {
+        const fromPlan = planCriteria.get(id);
+        if (fromPlan) { slices.push(fromPlan); continue; }
+        const synthesized = criteriaFromSlice(builtSlice);
+        if (synthesized) slices.push(synthesized);
+        else emit('evals-skip', { repo, sliceId: id, reason: 'slice has no description to derive acceptance from' });
+      }
+      if (!slices.length) { emit('evals-skip', { repo, reason: 'no evaluable built slices' }); continue; }
       console.log(`\n######## Acceptance evals ${repo} (${slices.length} slice(s) built this run) ########`);
       emit('evals-start', { repo, slices: slices.length });
       let report;
