@@ -17,6 +17,10 @@ export const CONFIG_DEFAULTS = Object.freeze({
   workers: 3,
   fixWorkers: 1,
   maxSlices: 12,
+  // Deploy the touched project(s) after a clean run (something merged, verify
+  // passed, no failed acceptance evals). Off by default — a run auto-shipping
+  // to production is opt-in. --deploy / --no-deploy override per run.
+  deployAfterRun: false,
   providers: Object.freeze({
     builderPriority: Object.freeze(['codex', 'glm', 'claude']),
     reviewerPriority: Object.freeze(['claude', 'codex', 'glm']),
@@ -64,6 +68,12 @@ function intField(configPath, raw, key, { min }) {
   if (!Number.isInteger(raw) || raw < min) {
     fail(configPath, `"${key}" must be an integer >= ${min} (got ${JSON.stringify(raw)})`);
   }
+  return raw;
+}
+
+function boolField(configPath, raw, key) {
+  if (raw === undefined) return CONFIG_DEFAULTS[key];
+  if (typeof raw !== 'boolean') fail(configPath, `"${key}" must be true or false (got ${JSON.stringify(raw)})`);
   return raw;
 }
 
@@ -224,6 +234,7 @@ export function loadConfig(pathOrDir = process.cwd()) {
     workers,
     fixWorkers,
     maxSlices,
+    deployAfterRun: boolField(configPath, parsed.deployAfterRun, 'deployAfterRun'),
     providers: providersField(configPath, parsed.providers),
     models: modelsField(configPath, parsed.models),
     projects: projectsField(configPath, parsed.projects),

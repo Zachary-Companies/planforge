@@ -87,8 +87,11 @@ stdout prefixed `@event `. Event shapes (stable, additive-only):
 { "t": <ms>, "type": "eval-start",     "sliceId": "...", "criteria": 2 }
 { "t": <ms>, "type": "eval-result",    "sliceId": "...", "status": "pass|fail|error", "met": 2, "total": 2 }
 { "t": <ms>, "type": "evals-done",     "repo": "owner/repo", "passed": 2, "failed": 1, "total": 3, "failedSlices": ["..."] }
+{ "t": <ms>, "type": "deploy-start",   "repo": "owner/repo" }
+{ "t": <ms>, "type": "deploy-result",  "repo": "owner/repo", "ok": true, "code": 0 }
+{ "t": <ms>, "type": "deploy-skip",    "repo": "owner/repo", "reason": "acceptance evals failed" }
 { "t": <ms>, "type": "stats",          "launched": 4, "budget": 12, "inFlight": 2, "queued": 1, "mergedPrs": 3, "mergedSlices": 3, "failed": 0, "fixing": 0, "fixQueued": 0, "fixed": 1, "dry": false, "elapsedMs": 12345 }
-{ "t": <ms>, "type": "run-done",       "launched": 12, "mergedPrs": 10, "failed": 1, "fixed": 2, "evalsFailed": 1 }
+{ "t": <ms>, "type": "run-done",       "launched": 12, "mergedPrs": 10, "failed": 1, "fixed": 2, "evalsFailed": 1, "deployed": 1 }
 ```
 
 Features can be added to a run WHILE it is going: `POST /api/runs/:id/requests`

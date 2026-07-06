@@ -512,6 +512,8 @@ async function cmdRun(argv) {
     else if (arg === '--no-fix') overrides.fixWorkers = 0;
     else if (arg === '--no-verify') overrides.verify = false;
     else if (arg === '--no-evals') overrides.evals = false;
+    else if (arg === '--deploy') overrides.deploy = true;
+    else if (arg === '--no-deploy') overrides.deploy = false;
     else if (arg === '--verify-only') overrides.verifyOnly = true;
     else if (arg === '--repo') (overrides.repos = overrides.repos || []).push(need(argv, ++i, '--repo'));
     else if (arg === '--builder') overrides.builder = need(argv, ++i, '--builder');

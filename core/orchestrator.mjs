@@ -61,7 +61,7 @@ import {
   checkProvider,
 } from './providers.mjs';
 import { pathContains, shellInvocation } from './platform.mjs';
-import { verifySteps } from './project.mjs';
+import { verifySteps, detectProjectActions } from './project.mjs';
 import { parseAcceptanceCriteria, criteriaFromSlice, runAcceptanceEvals, makeAgentEvaluator } from './evals.mjs';
 
 // Run a project's verify steps (install → build → test) in its checkout,
@@ -263,6 +263,11 @@ Options:
   --no-evals            Skip the acceptance-eval phase (which independently
                         proves each slice built this run meets its plan's
                         acceptance criteria, not just that the build is green).
+  --deploy / --no-deploy  Deploy the touched project(s) after a clean run
+                        (something merged, verify passed, no failed evals).
+                        Reuses "planforge publish". Default from config
+                        "deployAfterRun". A run that did not fully pass is
+                        never deployed.
   --seed-slices <file>  Pre-load a JSON array of slices into the build queue BEFORE
                         the planner runs, for work the planner won't surface on its
                         own. Same slice shape as planner output
@@ -1599,6 +1604,7 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   const verifyFn = deps.runVerify || runVerify;
   const projectsCfg = args.projects || {};
   const overridesFor = (repo) => projectsCfg[repo] || projectsCfg[repo.split('/').pop()] || {};
+  let verifyFailedAny = false;
   if (args.verify !== false) {
     for (const repo of repos) {
       const dir = repoDirOf(repo, args.workspace);
@@ -1630,7 +1636,7 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
         if (merged.length) { mergedPrs.push(...merged); mergedSliceCount += merged.length; emit('merge', { label: `verify-fix ${repo}`, merged, repo, total: [...new Set(mergedPrs)].length }); }
         steps = verifySteps(dir, overridesFor(repo)); // node_modules may now exist → install step drops
       }
-      if (!passed) emit('verify-failed', { repo });
+      if (!passed) { verifyFailedAny = true; emit('verify-failed', { repo }); }
     }
   }
 
@@ -1682,6 +1688,45 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   }
 
   const mergedTotal = [...new Set(mergedPrs)].length;
+
+  // Deploy phase (opt-in): ship the project(s) this run touched — but ONLY when
+  // the run actually passed. Reuses `planforge publish`, which syncs to the
+  // merged code, rebuilds, runs its publish preflight, and deploys. Never ships
+  // a run that merged nothing, failed verify, or failed acceptance evals — the
+  // whole point of the gates is not to auto-ship unverified code.
+  let deployedCount = 0;
+  if (args.deploy && !args.verifyOnly && !args.dryRun) {
+    const mergedRepos = new Set(mergedPrs.map((x) => String(x).split('#')[0]));
+    if (mergedTotal === 0) {
+      emit('deploy-skip', { reason: 'nothing merged this run' });
+    } else if (verifyFailedAny || evalsFailedTotal > 0) {
+      emit('deploy-skip', { reason: verifyFailedAny ? 'verification failed' : 'acceptance evals failed' });
+      console.warn(`\nDeploy skipped: ${verifyFailedAny ? 'verification failed' : `${evalsFailedTotal} acceptance eval(s) failed`} — not shipping unverified code.`);
+    } else {
+      const planforgeBin = join(SCRIPT_DIR, '..', 'bin', 'planforge.mjs');
+      const deployFn = deps.deployProject || ((project, workspace, configPath) => {
+        const cli = [planforgeBin, 'publish', project, ...(configPath ? ['--config', configPath] : [])];
+        const r = spawnSync(process.execPath, cli, { cwd: workspace, stdio: ['ignore', 'inherit', 'inherit'], env: process.env });
+        return { code: r.status ?? 1 };
+      });
+      for (const repo of repos) {
+        if (!mergedRepos.has(repo)) continue;
+        const dir = repoDirOf(repo, args.workspace);
+        const publishAction = detectProjectActions(dir, overridesFor(repo)).actions.find((a) => a.id === 'publish' && a.available);
+        if (!publishAction) { emit('deploy-skip', { repo, reason: 'no deploy target detected (add firebase.json / vercel.json / netlify.toml or a deploy script)' }); continue; }
+        console.log(`\n######## Deploy ${repo} ########`);
+        emit('deploy-start', { repo });
+        let result;
+        try { result = await deployFn(repo.split('/').pop(), args.workspace, args.configPath); }
+        catch (e) { result = { code: 1, error: e.message }; }
+        const ok = (result?.code ?? 1) === 0;
+        if (ok) { deployedCount += 1; console.log(`Deployed ${repo}.`); }
+        else console.warn(`Deploy ${repo} failed (exit ${result?.code}).`);
+        emit('deploy-result', { repo, ok, code: result?.code ?? 1 });
+      }
+    }
+  }
+
   const exhausted = [...fixAttempts.entries()].filter(([, n]) => n >= MAX_FIX_ATTEMPTS).map(([k]) => k);
   console.log(`\nDone. ${launchedCount} slice(s) attempted, ${mergedTotal} PR(s) merged${fixCap > 0 ? `, ${fixedCount} fixed PR(s) landed` : ''}. Transcripts: ${runDir}`);
   if (exhausted.length) console.warn(`Fix lane gave up on ${exhausted.length} PR(s) after ${MAX_FIX_ATTEMPTS} tries: ${exhausted.join(', ')}`);
@@ -1689,7 +1734,7 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
     console.warn(`User request(s) never planned this run: ${pendingRequests.map((r) => `[${r.id}] ${r.text}`).join('; ')} — the planner ran dry or they conflicted all run; try again or make them more specific.`);
   }
   if (evalsFailedTotal) console.warn(`Acceptance evals: ${evalsFailedTotal} slice(s) built this run are NOT verified as complete — see the eval reports under ${join(runDir, 'evals')}.`);
-  emit('run-done', { launched: launchedCount, mergedPrs: mergedTotal, failed: failedCount, fixed: fixedCount, fixUnresolved: exhausted.length, evalsFailed: evalsFailedTotal, unplannedRequests: pendingRequests.length, elapsedMs: Date.now() - startedAt });
+  emit('run-done', { launched: launchedCount, mergedPrs: mergedTotal, failed: failedCount, fixed: fixedCount, fixUnresolved: exhausted.length, evalsFailed: evalsFailedTotal, deployed: deployedCount, unplannedRequests: pendingRequests.length, elapsedMs: Date.now() - startedAt });
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,6 +1767,10 @@ function buildRunArgs(config, overrides) {
     requests: overrides.requests ?? [],
     verify: overrides.verify ?? true,
     evals: overrides.evals ?? true,
+    // Deploy the project(s) after a clean run (something merged, verify passed,
+    // no failed acceptance evals). Opt-in: config.deployAfterRun, --deploy on.
+    deploy: overrides.deploy ?? config.deployAfterRun ?? false,
+    configPath: config.configPath ?? null,
     verifyOnly,
     projects: config.projects ?? {},
   };

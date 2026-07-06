@@ -214,6 +214,55 @@ test('--no-evals (args.evals=false) skips the acceptance eval phase', POOL, asyn
   rmSync(ws, { recursive: true, force: true });
 });
 
+// ---- deploy-after-run: ships on a clean run, refuses on a failed one ----
+test('deploy phase ships a clean run and skips a run with failed evals', async () => {
+  const ws = mkdtempSync(join(tmpdir(), 'pf-deploy-'));
+  // a repo checkout with a deploy target so a publish action is detected
+  const repoDir = join(ws, 'demo');
+  mkdirSync(join(repoDir, 'node_modules'), { recursive: true });
+  writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ scripts: { build: 'vite build' } }));
+  writeFileSync(join(repoDir, 'firebase.json'), '{}');
+
+  const planSome = (() => { let n = 0; return async ({ k }) => { await sleep(1); if (n >= 1) return { slices: [], empty: true }; n += 1; return { slices: [{ id: 'feat', repo: 'o/demo', title: 'feat', paths: ['src/feat.ts'], kind: 'feature' }], empty: false }; }; })();
+  const runWorker = async ({ slice }) => { await sleep(1); return { slice, ok: true }; };
+
+  // ---- clean run: eval passes → deploy runs ----
+  const deployed = [];
+  const deployProject = async (project) => { deployed.push(project); return { code: 0 }; };
+  let events = [];
+  await runPool({
+    args: makeArgs({ workers: 1, repos: ['o/demo'], workspace: ws, plansPath: join(ws, 'plans'), deploy: true }),
+    runDir: mkdtempSync(join(tmpdir(), 'pf-deploy-dir-')), roles, sliceBudget: 999,
+    emit: (t, d) => events.push([t, d]),
+    deps: {
+      planSome, runWorker, mergeWorkerPrs: () => ['o/demo#1'], runReconcile: async () => {}, runVerify: () => ({ ok: true }),
+      evalRunner: async (slice, { verdictFile }) => { writeFileSync(verdictFile, JSON.stringify({ sliceId: slice.id, status: 'pass', criteria: slice.criteria.map((text) => ({ text, met: true, evidence: 'ran' })) })); return { code: 0 }; },
+      deployProject,
+    },
+  });
+  assert.deepEqual(deployed, ['demo'], 'a clean run deployed the touched project');
+  assert.ok(events.some(([t, d]) => t === 'deploy-result' && d.ok), 'deploy-result ok emitted');
+  assert.equal(events.find(([t]) => t === 'run-done')[1].deployed, 1);
+
+  // ---- failed evals: deploy is skipped, nothing shipped ----
+  const deployed2 = [];
+  events = [];
+  const planSome2 = (() => { let n = 0; return async ({ k }) => { await sleep(1); if (n >= 1) return { slices: [], empty: true }; n += 1; return { slices: [{ id: 'feat2', repo: 'o/demo', title: 'feat2', paths: ['src/feat2.ts'], kind: 'feature' }], empty: false }; }; })();
+  await runPool({
+    args: makeArgs({ workers: 1, repos: ['o/demo'], workspace: ws, plansPath: join(ws, 'plans'), deploy: true }),
+    runDir: mkdtempSync(join(tmpdir(), 'pf-deploy-dir2-')), roles, sliceBudget: 999,
+    emit: (t, d) => events.push([t, d]),
+    deps: {
+      planSome: planSome2, runWorker, mergeWorkerPrs: () => ['o/demo#2'], runReconcile: async () => {}, runVerify: () => ({ ok: true }),
+      evalRunner: async (slice, { verdictFile }) => { writeFileSync(verdictFile, JSON.stringify({ sliceId: slice.id, status: 'fail', criteria: slice.criteria.map((text) => ({ text, met: false, evidence: 'broken' })) })); return { code: 0 }; },
+      deployProject: async (p) => { deployed2.push(p); return { code: 0 }; },
+    },
+  });
+  assert.deepEqual(deployed2, [], 'a run with a failed eval did NOT deploy');
+  assert.ok(events.some(([t, d]) => t === 'deploy-skip' && /eval/.test(d.reason)), 'deploy-skip cites the failed evals');
+  rmSync(ws, { recursive: true, force: true });
+});
+
 // ---- live request inbox: a request dropped mid-run gets planned+built ----
 test('a request added to the run inbox mid-run is picked up without a restart', POOL, async () => {
   const runDir = mkdtempSync(join(tmpdir(), 'pf-inbox-'));

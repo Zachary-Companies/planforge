@@ -60,10 +60,16 @@ function eventLine(e) {
         : `✔ acceptance evals ${shortRepo(e.repo)} — all ${e.passed} verified`;
     case 'evals-skip':
       return `acceptance evals ${e.repo ? `${shortRepo(e.repo)} ` : ''}skipped — ${e.reason}`;
+    case 'deploy-start':
+      return `deploying ${shortRepo(e.repo)}…`;
+    case 'deploy-result':
+      return e.ok ? `🚀 deployed ${shortRepo(e.repo)}` : `✖ deploy ${shortRepo(e.repo)} failed (exit ${e.code})`;
+    case 'deploy-skip':
+      return `deploy ${e.repo ? `${shortRepo(e.repo)} ` : ''}skipped — ${e.reason}`;
     case 'provider-switch':
       return `providers switched — builder ${e.builder} · reviewer ${e.reviewer}${(e.demoted ?? []).length ? ` · demoted ${(e.demoted ?? []).join(', ')}` : ''}`;
     case 'run-done':
-      return `run done — ${e.launched} launched · ${e.mergedPrs} merged · ${e.failed} failed · ${e.fixed} fixed${e.evalsFailed ? ` · ${e.evalsFailed} unverified` : ''}`;
+      return `run done — ${e.launched} launched · ${e.mergedPrs} merged · ${e.failed} failed · ${e.fixed} fixed${e.evalsFailed ? ` · ${e.evalsFailed} unverified` : ''}${e.deployed ? ` · ${e.deployed} deployed 🚀` : ''}`;
     default:
       return e.type;
   }
@@ -78,6 +84,9 @@ function eventClass(e) {
   if (e.type === 'verify-repair') return 'fix';
   if (e.type === 'verify-start') return 'plan';
   if (e.type === 'verify-failed' || e.type === 'verify-giveup') return 'warn';
+  if (e.type === 'deploy-result') return e.ok ? 'ok' : 'fail';
+  if (e.type === 'deploy-start') return 'plan';
+  if (e.type === 'deploy-skip') return 'warn';
   if (e.type === 'eval-result') return e.status === 'pass' ? 'ok' : 'fail';
   if (e.type === 'evals-done') return e.failed ? 'warn' : 'ok';
   if (e.type === 'evals-start' || e.type === 'eval-start') return 'plan';
