@@ -62,6 +62,7 @@ import {
 } from './providers.mjs';
 import { pathContains, shellInvocation } from './platform.mjs';
 import { verifySteps } from './project.mjs';
+import { parseAcceptanceCriteria, runAcceptanceEvals, makeAgentEvaluator } from './evals.mjs';
 
 // Run a project's verify steps (install → build → test) in its checkout,
 // stopping at the first failure. Returns { ok } or { ok:false, failedStep,
@@ -259,6 +260,9 @@ Options:
                         deferred failing/conflicting/stale-draft worker PRs).
   --no-fix              Disable the fix lane (build/merge only).
   --no-verify           Skip the end-of-run build/test verify-and-repair phase.
+  --no-evals            Skip the acceptance-eval phase (which independently
+                        proves each slice built this run meets its plan's
+                        acceptance criteria, not just that the build is green).
   --seed-slices <file>  Pre-load a JSON array of slices into the build queue BEFORE
                         the planner runs, for work the planner won't surface on its
                         own. Same slice shape as planner output
@@ -1156,6 +1160,10 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   let planningPromise = null;
   let reconciling = false;
   let failedCount = 0;
+  // Feature slices a worker actually built ok this run — the scope for the
+  // end-of-run acceptance evals (we prove what THIS run produced, not the whole
+  // plan, to keep the cost bounded).
+  const builtSlices = new Map(); // repo -> Set(sliceId)
   const pendingReconciles = [];
   // Fix-lane state. fixInFlight: slotId -> item being fixed; fixReady: discovered
   // fixable PRs awaiting a slot; fixAttempts: per-PR try count; fixDry: last scan
@@ -1478,6 +1486,10 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
       console.warn(`[w${slotId}] slice "${slice?.id}" did not finish cleanly${result.reason ? `: ${result.reason}` : ''}`);
     }
     reactToWorkerLog(result); // demote a provider that hit a limit
+    if (result.ok && slice?.id && slice?.repo && slice.kind !== 'fix' && slice.kind !== 'refactor') {
+      if (!builtSlices.has(slice.repo)) builtSlices.set(slice.repo, new Set());
+      builtSlices.get(slice.repo).add(slice.id);
+    }
     emit('worker-done', { slot: slotId, sliceId: slice?.id, ok: !!result.ok, branch: result.branch || null, repo: slice?.repo, kind: slice?.kind, ms: buildMs, reason: result.reason });
     emitStats();
 
@@ -1564,6 +1576,42 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
     }
   }
 
+  // Acceptance evals: independently prove each feature built THIS run actually
+  // satisfies its plan acceptance criteria — not just that the build is green.
+  // An evaluator agent (the reviewer provider, independent of the builder)
+  // runs the criteria and writes a verdict; a slice is only acceptance-verified
+  // when every criterion passes with evidence. Scoped to this run's built
+  // slices to bound cost. --no-evals skips it.
+  // Scoped to slices actually built this run (empty for dry/verify-only runs,
+  // so those skip naturally — no need to test `dry` here, same as verify).
+  let evalsFailedTotal = 0;
+  let evalRunner = deps.evalRunner || null;
+  if (args.evals !== false && builtSlices.size && !evalRunner) {
+    // Eval-setup problems (no agent for the reviewer provider, etc.) must not
+    // sink a run that already built and merged — skip evals with a warning.
+    try { evalRunner = makeAgentEvaluator({ provider: roles.reviewer }); }
+    catch (e) { console.warn(`Skipping acceptance evals: ${e.message}`); emit('evals-skip', { reason: e.message }); }
+  }
+  if (args.evals !== false && builtSlices.size && evalRunner) {
+    for (const [repo, idSet] of builtSlices) {
+      const planFile = join(args.plansPath || '', `${repo.split('/').pop()}-build-plan.md`);
+      let planMd = '';
+      try { planMd = readFileSync(planFile, 'utf8'); } catch { /* no plan */ }
+      if (!planMd) { emit('evals-skip', { repo, reason: 'no plan file' }); continue; }
+      const slices = parseAcceptanceCriteria(planMd).filter((s) => idSet.has(s.id));
+      if (!slices.length) { emit('evals-skip', { repo, reason: 'built slices have no acceptance criteria in the plan' }); continue; }
+      console.log(`\n######## Acceptance evals ${repo} (${slices.length} slice(s) built this run) ########`);
+      emit('evals-start', { repo, slices: slices.length });
+      let report;
+      try {
+        report = await runAcceptanceEvals({ slices, repoDir: repoDirOf(repo, args.workspace), logDir: join(runDir, 'evals', repo.split('/').pop()), runEvaluator: evalRunner, emit });
+      } catch (e) { console.warn(`Acceptance evals for ${repo} crashed (non-fatal): ${e.message}`); emit('evals-skip', { repo, reason: e.message }); continue; }
+      evalsFailedTotal += report.failed;
+      emit('evals-done', { repo, passed: report.passed, failed: report.failed, total: report.total, failedSlices: report.results.filter((r) => r.status !== 'pass').map((r) => r.sliceId) });
+      console.log(`Acceptance evals ${repo}: ${report.passed}/${report.total} verified${report.failed ? `, ${report.failed} NOT verified: ${report.results.filter((r) => r.status !== 'pass').map((r) => r.sliceId).join(', ')}` : ''}`);
+    }
+  }
+
   const mergedTotal = [...new Set(mergedPrs)].length;
   const exhausted = [...fixAttempts.entries()].filter(([, n]) => n >= MAX_FIX_ATTEMPTS).map(([k]) => k);
   console.log(`\nDone. ${launchedCount} slice(s) attempted, ${mergedTotal} PR(s) merged${fixCap > 0 ? `, ${fixedCount} fixed PR(s) landed` : ''}. Transcripts: ${runDir}`);
@@ -1571,7 +1619,8 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   if (pendingRequests.length) {
     console.warn(`User request(s) never planned this run: ${pendingRequests.map((r) => `[${r.id}] ${r.text}`).join('; ')} — the planner ran dry or they conflicted all run; try again or make them more specific.`);
   }
-  emit('run-done', { launched: launchedCount, mergedPrs: mergedTotal, failed: failedCount, fixed: fixedCount, fixUnresolved: exhausted.length, unplannedRequests: pendingRequests.length, elapsedMs: Date.now() - startedAt });
+  if (evalsFailedTotal) console.warn(`Acceptance evals: ${evalsFailedTotal} slice(s) built this run are NOT verified as complete — see the eval reports under ${join(runDir, 'evals')}.`);
+  emit('run-done', { launched: launchedCount, mergedPrs: mergedTotal, failed: failedCount, fixed: fixedCount, fixUnresolved: exhausted.length, evalsFailed: evalsFailedTotal, unplannedRequests: pendingRequests.length, elapsedMs: Date.now() - startedAt });
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,6 +1652,7 @@ function buildRunArgs(config, overrides) {
     dryRun: !!overrides.dryRun,
     requests: overrides.requests ?? [],
     verify: overrides.verify ?? true,
+    evals: overrides.evals ?? true,
     verifyOnly,
     projects: config.projects ?? {},
   };

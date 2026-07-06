@@ -23,6 +23,7 @@ import { loadConfig, CONFIG_FILENAME, CONFIG_DEFAULTS } from '../core/config.mjs
 import { agentInvocation } from '../core/providers.mjs';
 import { findPosixShell, IS_WINDOWS, POSIX_SHELL_HINT, shellInvocation } from '../core/platform.mjs';
 import { detectProjectActions, installCommand, listProjects, localDirForRepo, postBuildPublishBlockers, refreshGitInfo, verifySteps } from '../core/project.mjs';
+import { parseAcceptanceCriteria, runAcceptanceEvals, makeAgentEvaluator, summarizeEvalReport } from '../core/evals.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -95,6 +96,15 @@ Usage:
       bundle that was built with placeholder config.
       Override commands in planforge.config.json under "projects".
       The project name is optional when there is only one.
+
+  planforge eval [<project>] [--all | --status <s> | --slice <id>] [--provider <p>] [--json] [--config <path>]
+      Prove each slice's asked-for feature actually works. An independent
+      evaluator agent runs the plan's per-slice "acceptance:" criteria against
+      the repo — executing the build/tests and adding a repeatable test for
+      anything uncovered — and writes a pass/fail verdict per slice. Defaults
+      to the slices marked "shipped" (guarantee that what claims done is done);
+      --all covers every slice with acceptance criteria. Exits non-zero if any
+      slice's acceptance is not verified.
 
 Config is found by walking up from the current directory (or use --config).`);
 }
@@ -501,6 +511,7 @@ async function cmdRun(argv) {
     else if (arg === '--fix-workers') overrides.fixWorkers = parseIntFlag(need(argv, ++i, '--fix-workers'), '--fix-workers', { min: 0 });
     else if (arg === '--no-fix') overrides.fixWorkers = 0;
     else if (arg === '--no-verify') overrides.verify = false;
+    else if (arg === '--no-evals') overrides.evals = false;
     else if (arg === '--verify-only') overrides.verifyOnly = true;
     else if (arg === '--repo') (overrides.repos = overrides.repos || []).push(need(argv, ++i, '--repo'));
     else if (arg === '--builder') overrides.builder = need(argv, ++i, '--builder');
@@ -839,6 +850,78 @@ async function cmdProjectAction(action, argv) {
   });
 }
 
+// planforge eval — prove each slice's asked-for feature actually works, by
+// running an independent evaluator agent against the plan's acceptance criteria.
+// Exits non-zero if any evaluated slice's acceptance is not verified.
+async function cmdEval(argv) {
+  let configArg = null; let nameArg = null; let providerArg = null;
+  let statusFilter = 'shipped'; const onlySlices = []; let asJson = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--config') configArg = resolve(need(argv, ++i, '--config'));
+    else if (a === '--provider') providerArg = need(argv, ++i, '--provider');
+    else if (a === '--slice') onlySlices.push(need(argv, ++i, '--slice'));
+    else if (a === '--all') statusFilter = 'all';
+    else if (a === '--status') statusFilter = need(argv, ++i, '--status');
+    else if (a === '--json') asJson = true;
+    else if (!a.startsWith('--')) nameArg = a;
+    else throw new Error(`Unknown option for eval: ${a}`);
+  }
+  const config = loadConfig(configArg || process.cwd());
+  const project = resolveProject(nameArg, config);
+  if (!project.exists) throw new Error(`Project folder not found: ${project.dir}`);
+
+  const planFile = join(config.plansPath, `${project.name}-build-plan.md`);
+  if (!existsSync(planFile)) {
+    throw new Error(`No build plan for "${project.name}" at ${planFile}. Acceptance evals read the plan's "acceptance:" criteria per slice.`);
+  }
+  let slices = parseAcceptanceCriteria(readFileSync(planFile, 'utf8'));
+  if (onlySlices.length) slices = slices.filter((s) => onlySlices.includes(s.id));
+  else if (statusFilter !== 'all') slices = slices.filter((s) => (s.status || 'pending') === statusFilter);
+  if (!slices.length) {
+    console.log(`No slices with acceptance criteria to evaluate (filter: ${onlySlices.length ? onlySlices.join(',') : statusFilter}).`);
+    return;
+  }
+
+  // Independent evaluator: a different provider than the builder when possible.
+  const { checkProvider } = await import('../core/providers.mjs');
+  let provider = providerArg;
+  if (!provider) {
+    provider = (config.providers.reviewerPriority || ['claude']).find((p) => checkProvider(p).available) || null;
+    if (!provider) throw new Error('No evaluator provider available — set up at least one agent (claude/codex/glm) and sign in.');
+  } else if (!checkProvider(provider).available) {
+    throw new Error(`Evaluator provider "${provider}" is not available (agent missing or not signed in).`);
+  }
+
+  // The agent wrappers read model/effort from these env vars (same as a run).
+  const m = config.models;
+  process.env.CLAUDE_CHAIN_MODEL = m.claude; process.env.CLAUDE_CHAIN_FALLBACK_MODEL = m.claudeFallback; process.env.CLAUDE_CHAIN_EFFORT = m.claudeEffort;
+  process.env.CODEX_CHAIN_MODEL = m.codex; if (m.codexEffort) process.env.CODEX_CHAIN_EFFORT = m.codexEffort;
+  if (m.glm) process.env.GLM_CHAIN_MODEL = m.glm; if (m.glmEffort) process.env.GLM_CHAIN_EFFORT = m.glmEffort;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logDir = join(config.workspace, '.planforge', 'evals', `${project.name}-${stamp}`);
+  console.log(`Evaluating ${slices.length} slice(s) of ${project.name} with an independent ${provider} evaluator — proving acceptance, not just build.\n`);
+  const report = await runAcceptanceEvals({
+    slices,
+    repoDir: project.dir,
+    logDir,
+    runEvaluator: makeAgentEvaluator({ provider }),
+    emit: (type, data) => console.log(`  · ${type}: ${data.sliceId}${data.status ? ` → ${data.status}` : ''}`),
+  });
+  writeFileSync(join(logDir, 'eval-report.json'), `${JSON.stringify({ project: project.name, provider, generatedAt: stamp, ...report }, null, 2)}\n`);
+
+  if (asJson) { console.log(JSON.stringify(report, null, 2)); }
+  else {
+    console.log(`\n${summarizeEvalReport(report)}`);
+    console.log(`\nReport: ${join(logDir, 'eval-report.json')}`);
+  }
+  if (report.failed > 0) {
+    console.error(`\n${report.failed} slice(s) failed acceptance — the feature(s) are NOT verified as complete.`);
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command || command === '--help' || command === '-h' || command === 'help') {
@@ -852,8 +935,9 @@ async function main() {
   if (command === 'doctor') return cmdDoctor(rest);
   if (command === 'projects') return cmdProjects(rest);
   if (command === 'fix') return cmdFix(rest);
+  if (command === 'eval') return cmdEval(rest);
   if (['start', 'build', 'publish', 'provision', 'sync', 'verify'].includes(command)) return cmdProjectAction(command, rest);
-  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, provision, sync, verify, fix)`);
+  throw new Error(`Unknown command: ${command} (try: init, plan, run, ui, doctor, projects, start, build, publish, provision, sync, verify, eval, fix)`);
 }
 
 // npm installs the bin as a symlink, so compare the realpath too.

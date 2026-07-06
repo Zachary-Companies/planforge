@@ -42,10 +42,24 @@ function eventLine(e) {
       return `verify ${shortRepo(e.repo)} — stopped (${e.reason}); left for a follow-up run`;
     case 'verify-failed':
       return `verify ${shortRepo(e.repo)} — still failing after repair attempts`;
+    case 'evals-start':
+      return `acceptance evals ${shortRepo(e.repo)} — proving ${e.slices} feature${e.slices === 1 ? '' : 's'} built this run`;
+    case 'eval-start':
+      return `evaluating ${e.sliceId} (${e.criteria} criteria)`;
+    case 'eval-result':
+      return e.status === 'pass'
+        ? `✔ ${e.sliceId} — acceptance verified (${e.met}/${e.total})`
+        : `✖ ${e.sliceId} — acceptance NOT met (${e.met}/${e.total})`;
+    case 'evals-done':
+      return e.failed
+        ? `acceptance evals ${shortRepo(e.repo)} — ${e.passed}/${e.total} verified, NOT verified: ${(e.failedSlices ?? []).join(', ')}`
+        : `✔ acceptance evals ${shortRepo(e.repo)} — all ${e.passed} verified`;
+    case 'evals-skip':
+      return `acceptance evals ${e.repo ? `${shortRepo(e.repo)} ` : ''}skipped — ${e.reason}`;
     case 'provider-switch':
       return `providers switched — builder ${e.builder} · reviewer ${e.reviewer}${(e.demoted ?? []).length ? ` · demoted ${(e.demoted ?? []).join(', ')}` : ''}`;
     case 'run-done':
-      return `run done — ${e.launched} launched · ${e.mergedPrs} merged · ${e.failed} failed · ${e.fixed} fixed`;
+      return `run done — ${e.launched} launched · ${e.mergedPrs} merged · ${e.failed} failed · ${e.fixed} fixed${e.evalsFailed ? ` · ${e.evalsFailed} unverified` : ''}`;
     default:
       return e.type;
   }
@@ -60,6 +74,10 @@ function eventClass(e) {
   if (e.type === 'verify-repair') return 'fix';
   if (e.type === 'verify-start') return 'plan';
   if (e.type === 'verify-failed' || e.type === 'verify-giveup') return 'warn';
+  if (e.type === 'eval-result') return e.status === 'pass' ? 'ok' : 'fail';
+  if (e.type === 'evals-done') return e.failed ? 'warn' : 'ok';
+  if (e.type === 'evals-start' || e.type === 'eval-start') return 'plan';
+  if (e.type === 'evals-skip') return 'warn';
   if (e.type === 'provider-switch') return 'provider';
   if (e.type === 'seed-slices') return 'seed';
   if (e.type === 'plan-result' && e.status === 'saturated') return 'warn';

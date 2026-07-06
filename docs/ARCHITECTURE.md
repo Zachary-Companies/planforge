@@ -81,8 +81,12 @@ stdout prefixed `@event `. Event shapes (stable, additive-only):
 { "t": <ms>, "type": "merge",          "label": "...", "merged": ["owner/repo#12"] }
 { "t": <ms>, "type": "fix-scan",       "found": 1, "queued": 1, "fixing": 0 }
 { "t": <ms>, "type": "provider-switch","builder": "codex", "reviewer": "claude", "demoted": ["glm"] }
+{ "t": <ms>, "type": "evals-start",    "repo": "owner/repo", "slices": 3 }
+{ "t": <ms>, "type": "eval-start",     "sliceId": "...", "criteria": 2 }
+{ "t": <ms>, "type": "eval-result",    "sliceId": "...", "status": "pass|fail|error", "met": 2, "total": 2 }
+{ "t": <ms>, "type": "evals-done",     "repo": "owner/repo", "passed": 2, "failed": 1, "total": 3, "failedSlices": ["..."] }
 { "t": <ms>, "type": "stats",          "launched": 4, "budget": 12, "inFlight": 2, "queued": 1, "mergedPrs": 3, "mergedSlices": 3, "failed": 0, "fixing": 0, "fixQueued": 0, "fixed": 1, "dry": false, "elapsedMs": 12345 }
-{ "t": <ms>, "type": "run-done",       "launched": 12, "mergedPrs": 10, "failed": 1, "fixed": 2 }
+{ "t": <ms>, "type": "run-done",       "launched": 12, "mergedPrs": 10, "failed": 1, "fixed": 2, "evalsFailed": 1 }
 ```
 
 The UI server tails `events.ndjson` and re-emits over Server-Sent Events at

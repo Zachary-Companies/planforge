@@ -104,7 +104,12 @@ Each phase lists slices. Slice block, exact (`deps:` line optional):
 - `status` — exactly one of `pending | building | shipped | blocked-on-Dx`.
 - `acceptance` — one or more lines; each is something a reviewer can verify
   without asking the author (a command that passes, a visible behavior, a
-  file that exists with specific content).
+  file that exists with specific content). These are EXECUTED: `planforge eval`
+  and a run's acceptance-eval phase hand each criterion to an independent
+  evaluator agent that must prove it by running the feature (and adding a
+  repeatable test for it), so write them as concrete, runnable checks — a slice
+  is only truly done when every acceptance criterion is verified, not just when
+  the build is green.
 - Sizing: a slice is one PR that one worker can finish without waiting on
   anyone — roughly a day of focused work or less. If a slice needs two repos,
   two owners, or "and then also…", split it.

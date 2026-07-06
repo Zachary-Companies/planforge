@@ -128,6 +128,83 @@ test('refactor cadence', POOL, async () => {
   assert.ok(maxRef <= 1, 'never two refactors building at once');
 });
 
+// ---- acceptance evals: run for this-run's built slices, gate run-done ----
+test('acceptance evals run for built slices and surface failures in run-done', POOL, async () => {
+  const ws = mkdtempSync(join(tmpdir(), 'pf-evalrun-'));
+  mkdirSync(join(ws, 'plans'), { recursive: true });
+  writeFileSync(join(ws, 'plans', 'a-build-plan.md'), [
+    '# A — build plan', '## 4. Phases', '### Phase 1',
+    '- **feat-good — Good**\n  - status: pending\n  - acceptance: it works',
+    '- **feat-bad — Bad**\n  - status: pending\n  - acceptance: it works\n  - acceptance: edge case',
+  ].join('\n'));
+
+  let launched = 0;
+  const planSome = async ({ k }) => {
+    await sleep(1);
+    if (launched >= 2) return { slices: [], empty: true };
+    const ids = ['feat-good', 'feat-bad'];
+    const slices = ids.slice(launched, launched + k).map((id) => {
+      launched += 1;
+      return { id, repo: 'o/a', title: id, paths: [`src/${id}.ts`], kind: 'feature' };
+    });
+    return { slices, empty: false };
+  };
+  const runWorker = async ({ slice }) => { await sleep(1); return { slice, ok: true }; };
+
+  // injected evaluator: pass feat-good, fail feat-bad (writes the verdict file)
+  const evalRunner = async (slice, { verdictFile }) => {
+    const pass = slice.id === 'feat-good';
+    writeFileSync(verdictFile, JSON.stringify({
+      sliceId: slice.id,
+      status: pass ? 'pass' : 'fail',
+      criteria: slice.criteria.map((text, i) => ({ text, met: pass || i === 0, evidence: 'ran' })),
+    }));
+    return { code: 0, stdout: '', stderr: '' };
+  };
+
+  const events = [];
+  const runDir = mkdtempSync(join(tmpdir(), 'pf-evalrun-dir-'));
+  await runPool({
+    args: makeArgs({ workers: 2, repos: ['o/a'], workspace: ws, plansPath: join(ws, 'plans') }),
+    runDir, roles, sliceBudget: 999,
+    emit: (t, d) => events.push([t, d]),
+    deps: { planSome, runWorker, mergeWorkerPrs: () => ['o/a#1'], runReconcile: async () => {}, evalRunner },
+  });
+
+  const started = events.find(([t]) => t === 'evals-start');
+  assert.ok(started, 'evals-start emitted for the repo');
+  assert.equal(started[1].slices, 2, 'both built slices evaluated');
+  const done = events.find(([t]) => t === 'evals-done');
+  assert.equal(done[1].passed, 1);
+  assert.equal(done[1].failed, 1);
+  assert.deepEqual(done[1].failedSlices, ['feat-bad']);
+  const runDone = events.find(([t]) => t === 'run-done');
+  assert.equal(runDone[1].evalsFailed, 1, 'run-done carries the unverified count');
+  // per-slice verdict files were written under the run dir
+  assert.ok(existsSync(join(runDir, 'evals', 'a', 'feat-good.verdict.json')));
+  rmSync(ws, { recursive: true, force: true });
+  rmSync(runDir, { recursive: true, force: true });
+});
+
+test('--no-evals (args.evals=false) skips the acceptance eval phase', POOL, async () => {
+  const ws = mkdtempSync(join(tmpdir(), 'pf-noeval-'));
+  mkdirSync(join(ws, 'plans'), { recursive: true });
+  writeFileSync(join(ws, 'plans', 'a-build-plan.md'), '# A\n## 4. Phases\n- **feat-x — X**\n  - acceptance: it works');
+  let launched = 0;
+  const planSome = async ({ k }) => { await sleep(1); if (launched >= 1) return { slices: [], empty: true }; launched += 1; return { slices: [{ id: 'feat-x', repo: 'o/a', title: 'X', paths: ['src/x.ts'], kind: 'feature' }], empty: false }; };
+  let evalCalled = false;
+  const events = [];
+  await runPool({
+    args: makeArgs({ workers: 1, repos: ['o/a'], workspace: ws, plansPath: join(ws, 'plans'), evals: false }),
+    runDir: mkdtempSync(join(tmpdir(), 'pf-noeval-dir-')), roles, sliceBudget: 999,
+    emit: (t, d) => events.push([t, d]),
+    deps: { planSome, runWorker: async ({ slice }) => ({ slice, ok: true }), mergeWorkerPrs: () => ['o/a#1'], runReconcile: async () => {}, evalRunner: async () => { evalCalled = true; return { code: 0 }; } },
+  });
+  assert.equal(evalCalled, false, 'evaluator never invoked when evals are off');
+  assert.ok(!events.some(([t]) => t === 'evals-start'), 'no evals phase');
+  rmSync(ws, { recursive: true, force: true });
+});
+
 // ---- reconcile cadence fires and respects the plans-repo-busy guard ----
 test('reconcile cadence + plans-busy guard', POOL, async () => {
   const K = 2, every = 1, budget = 8; // reconcile every every*K = 2 merged slices
