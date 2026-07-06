@@ -63,20 +63,53 @@ export function ensureDir(dir) {
   mkdirSync(dir, { recursive: true });
 }
 
+// How long a single agent CLI invocation may run before it's treated as hung
+// and killed. Without this an agent that wedges (a provider CLI that never
+// returns) blocks its worker forever, which freezes the whole run: the
+// orchestrator process stays alive but idle, the UI shows "running" with a
+// frozen elapsed, and no slice ever completes. 20 minutes is well beyond a
+// normal build/plan invocation; override with PLANFORGE_AGENT_TIMEOUT_MS
+// (0 disables the watchdog).
+const DEFAULT_AGENT_TIMEOUT_MS = 20 * 60 * 1000;
+
+export function agentTimeoutMs(explicit) {
+  if (explicit !== undefined) return explicit;
+  const env = Number(process.env.PLANFORGE_AGENT_TIMEOUT_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return DEFAULT_AGENT_TIMEOUT_MS;
+}
+
 // Run the agent CLI streaming stdout live, capturing stderr (so a caller can
 // inspect it for retry decisions), forwarding it on exit. Resolves exit code.
-export function runStreaming(cmd, args, { input, env } = {}) {
+// A hung agent is killed after `timeoutMs` (SIGTERM, then SIGKILL if it clings
+// on) and reported as exit 124 — the conventional "timed out" code — so the
+// worker fails that slice and the pool moves on instead of wedging forever.
+export function runStreaming(cmd, args, { input, env, timeoutMs } = {}) {
   return new Promise((resolveP) => {
     const child = spawnCli(cmd, args, { env: env || process.env, stdio: ['pipe', 'inherit', 'pipe'] });
     let stderr = '';
+    let timedOut = false;
+    let hardKill = null;
+    const limit = agentTimeoutMs(timeoutMs);
+    const watchdog = limit > 0 ? setTimeout(() => {
+      timedOut = true;
+      const msg = `\n[agent] no response after ${Math.round(limit / 1000)}s — terminating the stuck agent.\n`;
+      process.stderr.write(msg);
+      stderr += msg;
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      hardKill = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } }, 10_000);
+    }, limit) : null;
+    const clearTimers = () => { if (watchdog) clearTimeout(watchdog); if (hardKill) clearTimeout(hardKill); };
     child.stderr.on('data', (d) => { stderr += d.toString(); });
     child.on('error', (err) => {
+      clearTimers();
       process.stderr.write(`${err.message}\n`);
       resolveP({ code: 127, stderr: err.message });
     });
     child.on('close', (code) => {
+      clearTimers();
       if (stderr) process.stderr.write(stderr);
-      resolveP({ code: code ?? 1, stderr });
+      resolveP({ code: timedOut ? 124 : (code ?? 1), stderr, timedOut });
     });
     child.stdin.end(input ?? '');
   });
