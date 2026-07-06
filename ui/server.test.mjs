@@ -493,6 +493,33 @@ test('POST /api/runs/:id/stop reports when no live pid is tracked', async () => 
   assert.equal(unknown.status, 404);
 });
 
+test('POST /api/projects/:name/deploy-setting persists deployAfterRun into the config', async () => {
+  const res = await fetch(`${base}/api/projects/demo-app/deploy-setting`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: true, repo: 'acme/demo-app' }),
+  });
+  assert.equal(res.status, 200);
+  const { ok, enabled, key } = await res.json();
+  assert.equal(ok, true);
+  assert.equal(enabled, true);
+
+  // it landed in the on-disk config under the repo key
+  const cfg = JSON.parse(readFileSync(join(ws, 'planforge.config.json'), 'utf8'));
+  assert.equal(cfg.projects?.[key]?.deployAfterRun, true);
+
+  // and /api/projects now reports the project as deployAfterRun:true
+  const projects = (await (await fetch(`${base}/api/projects`)).json()).projects;
+  const demo = projects.find((p) => p.name === 'demo-app');
+  assert.equal(demo.deployAfterRun, true, 'the checkbox state is surfaced in the list');
+
+  // turning it back off updates the same key
+  await fetch(`${base}/api/projects/demo-app/deploy-setting`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false, repo: 'acme/demo-app' }),
+  });
+  const cfg2 = JSON.parse(readFileSync(join(ws, 'planforge.config.json'), 'utf8'));
+  assert.equal(cfg2.projects?.[key]?.deployAfterRun, false);
+});
+
 test('POST /api/runs/:id/requests drops a request into a live run inbox', async () => {
   const { readdirSync, writeFileSync } = await import('node:fs');
   const runDir = join(ws, '.planforge', 'runs', FIXTURE_RUN_ID);

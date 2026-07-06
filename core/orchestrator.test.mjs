@@ -231,7 +231,7 @@ test('deploy phase ships a clean run and skips a run with failed evals', async (
   const deployProject = async (project) => { deployed.push(project); return { code: 0 }; };
   let events = [];
   await runPool({
-    args: makeArgs({ workers: 1, repos: ['o/demo'], workspace: ws, plansPath: join(ws, 'plans'), deploy: true }),
+    args: makeArgs({ workers: 1, repos: ['o/demo'], workspace: ws, plansPath: join(ws, 'plans'), deployFlag: true }),
     runDir: mkdtempSync(join(tmpdir(), 'pf-deploy-dir-')), roles, sliceBudget: 999,
     emit: (t, d) => events.push([t, d]),
     deps: {
@@ -249,7 +249,7 @@ test('deploy phase ships a clean run and skips a run with failed evals', async (
   events = [];
   const planSome2 = (() => { let n = 0; return async ({ k }) => { await sleep(1); if (n >= 1) return { slices: [], empty: true }; n += 1; return { slices: [{ id: 'feat2', repo: 'o/demo', title: 'feat2', paths: ['src/feat2.ts'], kind: 'feature' }], empty: false }; }; })();
   await runPool({
-    args: makeArgs({ workers: 1, repos: ['o/demo'], workspace: ws, plansPath: join(ws, 'plans'), deploy: true }),
+    args: makeArgs({ workers: 1, repos: ['o/demo'], workspace: ws, plansPath: join(ws, 'plans'), deployFlag: true }),
     runDir: mkdtempSync(join(tmpdir(), 'pf-deploy-dir2-')), roles, sliceBudget: 999,
     emit: (t, d) => events.push([t, d]),
     deps: {

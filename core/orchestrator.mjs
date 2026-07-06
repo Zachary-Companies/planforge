@@ -1694,8 +1694,16 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
   // merged code, rebuilds, runs its publish preflight, and deploys. Never ships
   // a run that merged nothing, failed verify, or failed acceptance evals — the
   // whole point of the gates is not to auto-ship unverified code.
+  // Effective deploy setting per repo: an explicit --deploy/--no-deploy flag
+  // forces it; otherwise the per-project checkbox (config.projects.<p>.
+  // deployAfterRun) wins, falling back to the workspace default.
+  const deployWanted = (repo) => {
+    if (typeof args.deployFlag === 'boolean') return args.deployFlag;
+    const perProject = overridesFor(repo).deployAfterRun;
+    return typeof perProject === 'boolean' ? perProject : !!args.deployAfterRun;
+  };
   let deployedCount = 0;
-  if (args.deploy && !args.verifyOnly && !args.dryRun) {
+  if (!args.verifyOnly && !args.dryRun && repos.some(deployWanted)) {
     const mergedRepos = new Set(mergedPrs.map((x) => String(x).split('#')[0]));
     if (mergedTotal === 0) {
       emit('deploy-skip', { reason: 'nothing merged this run' });
@@ -1710,7 +1718,7 @@ export async function runPool({ args, runDir, roles, sliceBudget, emit = () => {
         return { code: r.status ?? 1 };
       });
       for (const repo of repos) {
-        if (!mergedRepos.has(repo)) continue;
+        if (!mergedRepos.has(repo) || !deployWanted(repo)) continue;
         const dir = repoDirOf(repo, args.workspace);
         const publishAction = detectProjectActions(dir, overridesFor(repo)).actions.find((a) => a.id === 'publish' && a.available);
         if (!publishAction) { emit('deploy-skip', { repo, reason: 'no deploy target detected (add firebase.json / vercel.json / netlify.toml or a deploy script)' }); continue; }
@@ -1768,8 +1776,11 @@ function buildRunArgs(config, overrides) {
     verify: overrides.verify ?? true,
     evals: overrides.evals ?? true,
     // Deploy the project(s) after a clean run (something merged, verify passed,
-    // no failed acceptance evals). Opt-in: config.deployAfterRun, --deploy on.
-    deploy: overrides.deploy ?? config.deployAfterRun ?? false,
+    // no failed acceptance evals). Per-project checkbox (config.projects.<p>.
+    // deployAfterRun) overrides the workspace default; --deploy/--no-deploy
+    // forces both. deployFlag is undefined unless the flag was given.
+    deployFlag: typeof overrides.deploy === 'boolean' ? overrides.deploy : undefined,
+    deployAfterRun: config.deployAfterRun ?? false,
     configPath: config.configPath ?? null,
     verifyOnly,
     projects: config.projects ?? {},

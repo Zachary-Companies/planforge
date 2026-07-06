@@ -100,6 +100,12 @@ function projectsField(configPath, raw) {
       if (typeof val[action] !== 'string') fail(configPath, `"projects.${key}.${action}" must be a string command (or "" to hide it)`);
       entry[action] = val[action];
     }
+    // Per-project deploy-after-run override (the UI checkbox writes this);
+    // overrides the workspace-level deployAfterRun for this project.
+    if (val.deployAfterRun !== undefined) {
+      if (typeof val.deployAfterRun !== 'boolean') fail(configPath, `"projects.${key}.deployAfterRun" must be true or false`);
+      entry.deployAfterRun = val.deployAfterRun;
+    }
     out[key] = entry;
   }
   return out;

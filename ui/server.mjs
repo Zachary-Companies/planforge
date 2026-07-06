@@ -1012,9 +1012,19 @@ function listProjectsEndpoint(res, ctx) {
   execFile(cmd.argv[0], args, { cwd: ctx.workspace, timeout: 30000 }, (err, stdout) => {
     let parsed;
     try { parsed = JSON.parse(stdout); } catch { json(res, 502, { error: `could not list projects: ${err ? err.message : 'bad output'}` }); return; }
+    const projectsCfg = (ctx.config && ctx.config.projects) || {};
+    const workspaceDefault = !!(ctx.config && ctx.config.deployAfterRun);
     const projects = (parsed.projects || []).map((p) => {
       const st = readProjectState(ctx, p.name);
-      return { ...p, running: st && st.alive ? { action: st.action, logId: st.logId, longRunning: st.longRunning, startedAt: st.startedAt } : null };
+      // Effective deploy-after-run: per-project override (by repo or name) or
+      // the workspace default — this drives the checkbox state.
+      const perProject = (p.repo && projectsCfg[p.repo]?.deployAfterRun) ?? projectsCfg[p.name]?.deployAfterRun;
+      const deployAfterRun = typeof perProject === 'boolean' ? perProject : workspaceDefault;
+      return {
+        ...p,
+        deployAfterRun,
+        running: st && st.alive ? { action: st.action, logId: st.logId, longRunning: st.longRunning, startedAt: st.startedAt } : null,
+      };
     });
     json(res, 200, { projects });
   });
@@ -1064,6 +1074,27 @@ function startProjectAction(res, ctx, name, body) {
 }
 
 // POST /api/projects/:name/stop — kill the running action's process group.
+// POST /api/projects/:name/deploy-setting { enabled, repo? } — persist the
+// "deploy after runs" checkbox into config.projects[<key>].deployAfterRun. The
+// key prefers an existing entry (so we don't create a duplicate the run ignores),
+// then the repo full name, then the project name.
+function setDeploySetting(res, ctx, name, body) {
+  const enabled = body?.enabled === true;
+  const repo = typeof body?.repo === 'string' && body.repo.trim() ? body.repo.trim() : null;
+  if (!ctx.configPath) { json(res, 400, { error: 'no config file to write (run from a workspace with planforge.config.json)' }); return; }
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(ctx.configPath, 'utf8')); } catch (err) { json(res, 500, { error: `cannot read config: ${err.message}` }); return; }
+  if (!cfg.projects || typeof cfg.projects !== 'object' || Array.isArray(cfg.projects)) cfg.projects = {};
+  const key = (repo && cfg.projects[repo] !== undefined) ? repo
+    : (cfg.projects[name] !== undefined ? name : (repo || name));
+  if (!cfg.projects[key] || typeof cfg.projects[key] !== 'object') cfg.projects[key] = {};
+  cfg.projects[key].deployAfterRun = enabled;
+  try { writeFileSync(ctx.configPath, `${JSON.stringify(cfg, null, 2)}\n`); } catch (err) { json(res, 500, { error: `cannot write config: ${err.message}` }); return; }
+  // Keep the in-memory config in sync so the very next /api/projects reflects it.
+  ctx.config = { ...ctx.config, projects: { ...(ctx.config.projects || {}), [key]: { ...((ctx.config.projects || {})[key] || {}), deployAfterRun: enabled } } };
+  json(res, 200, { ok: true, enabled, key });
+}
+
 function stopProjectAction(res, ctx, name) {
   const st = readProjectState(ctx, name);
   if (!st) { json(res, 409, { error: `nothing running for ${name}` }); return; }
@@ -1442,6 +1473,14 @@ export function createRequestHandler(ctx, options, sseClients) {
       const name = decodeURIComponent(m[1]);
       if (!safeName(name)) { json(res, 400, { error: 'invalid project name' }); return; }
       stopProjectAction(res, ctx, name);
+    }],
+
+    ['POST', /^\/api\/projects\/([^/]+)\/deploy-setting$/, async (req, res, m) => {
+      const name = decodeURIComponent(m[1]);
+      if (!safeName(name)) { json(res, 400, { error: 'invalid project name' }); return; }
+      const body = await readJsonBody(req, res);
+      if (body === undefined) return;
+      setDeploySetting(res, ctx, name, body);
     }],
 
     // Problem report: text + screenshots → a build-pool run. The generous body

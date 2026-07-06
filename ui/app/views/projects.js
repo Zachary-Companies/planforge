@@ -98,6 +98,23 @@ export function renderProjects(root, ctx) {
       return card;
     }
 
+    // "Deploy after each run" checkbox — persists to config.projects[...].
+    // Only meaningful when the project actually has a deploy target.
+    if ((p.actions || []).some((a) => a.id === 'publish' && a.available)) {
+      const deployRow = h(`<label class="project-deploy-toggle" title="When on, a clean run — everything merged, verify passed, and all acceptance evals passed — automatically deploys this project. A run that did not fully pass never deploys.">
+        <input type="checkbox" ${p.deployAfterRun ? 'checked' : ''}> Deploy after each run</label>`);
+      card.querySelector('.project-head > div:first-child').appendChild(deployRow);
+      const cb = deployRow.querySelector('input');
+      cb.addEventListener('change', async () => {
+        cb.disabled = true;
+        try {
+          await apiPost(`/api/projects/${encodeURIComponent(p.name)}/deploy-setting`, { enabled: cb.checked, ...(p.repo ? { repo: p.repo } : {}) });
+          toast(cb.checked ? 'On — a clean run will deploy this project' : 'Off — runs will not deploy this project');
+        } catch (err) { toast(err.message, 'err'); cb.checked = !cb.checked; }
+        finally { cb.disabled = false; }
+      });
+    }
+
     // Insert a banner + Update button when the local folder is behind the
     // remote (the pool merges to GitHub; the built code isn't pulled in yet).
     if (p.syncable || p.hint) {
